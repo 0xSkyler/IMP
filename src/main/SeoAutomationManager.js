@@ -114,9 +114,6 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         const proxySource = (0, ProxyManager_1.resolveProxySource)(config.proxySource ?? this.state.proxySource, config.proxyApiUrl ?? this.state.proxyApiUrl);
         const requestedTier = config.proxyTier ?? this.state.proxyTier;
         const proxyTier = requestedTier == null ? null : (0, ProxyTiers_1.resolveProxyTier)(requestedTier);
-        if (keywords.length > browserCount) {
-            throw new Error(`Select at least ${keywords.length} browsers to run all keywords at the same time.`);
-        }
         this.stopTimerOnly();
         this.proxyManager.cancelCurrentFetch();
         this.generation += 1;
@@ -430,6 +427,9 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
     async monitorBrowserSession(generation, cycleNumber, browserId, measurementToken, query, targetWebsite, controlledTestHost, maxPages, searchEngine) {
         const signal = this.cycleController.signal;
         const observationIntervalMs = 30_000;
+        const keywords = parseAutomationKeywords(this.state.query);
+        let keywordIndex = Math.max(0, keywords.indexOf(query));
+        let completed = 0;
         const interactionHost = controlledTestHost || (0, seo_1.normalizeTargetHost)(targetWebsite);
         if (!interactionHost)
             return;
@@ -464,81 +464,12 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                 !this.browserManager.isMeasurementSessionCurrent(browserId, measurementToken)) {
                 return;
             }
-            if (result.status === 'matched' &&
-                result.interactionStatus === 'opened' &&
-                result.matchedUrl) {
-                const landedUrl = result.landedUrl || result.matchedUrl;
-                const keepAliveHost = (0, seo_1.hostMatchesTarget)(landedUrl, interactionHost)
-                    ? (0, seo_1.normalizeTargetHost)(landedUrl) : interactionHost;
-                this.browserManager.startControlledKeepAlive(browserId, keepAliveHost);
-                this.emit('seoResult', {
-                    cycleNumber,
-                    result: {
-                        ...result,
-                        keepAliveStarted: true
-                    }
-                });
-                return;
-            }
-            if (result.status === 'matched' &&
-                result.interactionStatus === 'click-failed') {
-                this.emit('seoResult', { cycleNumber, result });
-                await cancellableDelay(3_000, signal);
-                continue;
-            }
-            if (result.status === 'matched' && result.matchedUrl) {
-                let matchedHost = '';
-                try {
-                    matchedHost = new URL(result.matchedUrl).hostname
-                        .toLowerCase()
-                        .replace(/^www\./, '')
-                        .replace(/\.$/, '');
-                }
-                catch {
-                    matchedHost = '';
-                }
-                if (matchedHost !== interactionHost) {
-                    this.emit('seoResult', {
-                        cycleNumber,
-                        result: {
-                            ...result,
-                            interactionStatus: 'click-failed',
-                            error: `Matched result host ${matchedHost || 'unknown'} does not equal configured interaction host ${interactionHost}.`
-                        }
-                    });
-                    await cancellableDelay(3_000, signal);
-                    continue;
-                }
-                this.emit('seoResult', {
-                    cycleNumber,
-                    result: {
-                        ...result,
-                        interactionStatus: 'opening'
-                    }
-                });
-                const clicked = await this.browserManager.clickControlledGoogleResult(browserId, query, interactionHost, result.matchedUrl, measurementToken, searchEngine);
-                if (clicked) {
-                    this.browserManager.startControlledKeepAlive(browserId, interactionHost);
-                    this.emit('seoResult', {
-                        cycleNumber,
-                        result: {
-                            ...result,
-                            landedUrl: result.matchedUrl,
-                            interactionStatus: 'opened',
-                            keepAliveStarted: true
-                        }
-                    });
-                    return;
-                }
-                this.emit('seoResult', {
-                    cycleNumber,
-                    result: {
-                        ...result,
-                        interactionStatus: 'click-failed',
-                        error: 'Target was detected, but the result could not be opened. DOM will retry in this session.'
-                    }
-                });
-                await cancellableDelay(3_000, signal);
+            if (result.status === 'matched' && result.interactionStatus === 'hovered') {
+                this.emit('seoResult', { cycleNumber, result: { ...result, query } });
+                completed += 1;
+                if (completed >= keywords.length) return;
+                keywordIndex = (keywordIndex + 1) % keywords.length;
+                query = keywords[keywordIndex];
                 continue;
             }
             this.emit('seoResult', { cycleNumber, result });
