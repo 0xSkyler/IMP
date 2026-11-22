@@ -598,7 +598,7 @@ function installGoogleResultObserver(target, query = '', publish = () => {}, eng
     const observeOptions = { childList: true, subtree: true, characterData: true,
         attributes: true, attributeFilter: ['href', 'data-href', 'data-url', 'data-rw', 'data-pcu', 'data-amp-cur',
             'data-dtld', 'aria-busy', 'aria-disabled', 'aria-label', 'role', 'class', 'style', 'hidden'] };
-    const watcher = { state: null, key: target + '|' + query + '|' + engine, click, stop, scan, get stopped() { return stopped; } };
+    const watcher = { state: null, key: target + '|' + query + '|' + engine, click, hoverPoint, stop, scan, get stopped() { return stopped; } };
     function scan(force = false) {
         scheduled = null;
         if (stopped || (!force && watcher.state?.match && !watcher.state.match.unresolved)) return;
@@ -625,6 +625,17 @@ function installGoogleResultObserver(target, query = '', publish = () => {}, eng
     }
     function schedule() {
         if (!stopped && !scheduled && (!watcher.state?.match || watcher.state.match.unresolved)) scheduled = setTimeout(scan, 60);
+    }
+    function hoverPoint() {
+        if (stopped) return null;
+        if (!matchedAnchor?.isConnected) scan(true);
+        if (!matchedAnchor?.isConnected || !watcher.state?.match) return null;
+        matchedAnchor.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+        const rect = matchedAnchor.getBoundingClientRect();
+        const x = Math.round(rect.left + rect.width / 2);
+        const y = Math.round(rect.top + rect.height / 2);
+        const hit = document.elementFromPoint(x, y);
+        return hit && matchedAnchor.contains(hit) ? { x, y } : null;
     }
     function click() {
         if (stopped) return false;
