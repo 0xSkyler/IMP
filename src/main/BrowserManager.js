@@ -970,118 +970,38 @@ class BrowserManager extends node_events_1.EventEmitter {
                             this.stopGoogleRecognition(managed, measurementToken);
                             return { browserId: id, status: 'error', error: 'Detected result destination did not match the target website.', ranAt };
                         }
-                        const navigationBeforeClick = managed.mainNavigationSequence || 0;
-                        if (matched.clickPoint &&
-                            Number.isFinite(matched.clickPoint.x) &&
-                            Number.isFinite(matched.clickPoint.y)) {
+                        // IMP watch-only: hover over the verified search result.
+                        // Do not click, open the target website, or start Keep Alive.
+                        let point = matched.clickPoint;
+                        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
                             try {
-                                const x = Math.max(1, Math.round(matched.clickPoint.x));
-                                const y = Math.max(1, Math.round(matched.clickPoint.y));
-                                wc.sendInputEvent({ type: 'mouseMove', x, y });
-                                wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-                                wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
-                            }
-                            catch {
-                                // The isolated preload will activate the anchor.
-                            }
-                            const activationDeadline = Date.now() + 500;
-                            while ((managed.mainNavigationSequence || 0) === navigationBeforeClick &&
-                                (0, seo_1.isSearchResultsUrl)(wc.getURL(), engine) && Date.now() < activationDeadline &&
-                                (measurementToken == null || this.isMeasurementSessionCurrent(id, measurementToken))) {
-                                await delay(25);
-                            }
+                                point = await withTimeout(
+                                    wc.executeJavaScript('window.__domGoogleWatcher?.hoverPoint?.()'),
+                                    500, () => null);
+                            } catch { point = null; }
                         }
-                        if (measurementToken != null && !this.isMeasurementSessionCurrent(id, measurementToken)) {
+                        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+                            return { browserId: id, status: 'monitoring', landedUrl: wc.getURL(),
+                                monitoring: true, resultsScanned: totalScanned,
+                                error: 'Target result found; waiting for a visible hover point.', ranAt };
+                        }
+                        if (measurementToken != null && !this.isMeasurementSessionCurrent(id, measurementToken))
+                            return { browserId: id, status: 'monitoring', monitoring: true, ranAt };
+                        wc.sendInputEvent({ type: 'mouseMove',
+                            x: Math.max(1, Math.round(point.x)), y: Math.max(1, Math.round(point.y)) });
+                        await delay(5_000);
+                        if (measurementToken != null && !this.isMeasurementSessionCurrent(id, measurementToken))
+                            return { browserId: id, status: 'monitoring', monitoring: true, ranAt };
+                        if (!(0, seo_1.isSearchResultsUrl)(wc.getURL(), engine))
                             return { browserId: id, status: 'monitoring', landedUrl: wc.getURL(), monitoring: true, ranAt };
-                        }
-                        if ((0, seo_1.isSearchResultsUrl)(wc.getURL(), engine) && (managed.mainNavigationSequence || 0) === navigationBeforeClick) {
-                            // A native click can already be navigating while
-                            // getURL still reports Google. Activate through the
-                            // preload only if that click started no navigation.
-                            wc.send('dom:google-click', managed.googleConfig.navigation);
-                        }
-                        const verifyTargetLanding = () => {
-                            let current = '';
-                            try { current = wc.getURL(); } catch { /* A transient navigation may dispose the frame. */ }
-                            if (measurementToken != null && !this.isMeasurementSessionCurrent(id, measurementToken)) {
-                                return { url: current, result: { browserId: id, status: 'monitoring', landedUrl: current,
-                                    resultsScanned: totalScanned, monitoring: true, keepAliveStarted: false, ranAt } };
-                            }
-                            if (!(0, seo_1.hostMatchesTarget)(current, targetHost)) return { url: current };
-                            totalScanned += pageMaxObserved;
-                            return { url: current, result: {
-                                browserId: id,
-                                status: 'matched',
-                                landedUrl: current,
-                                matchedUrl: matched.url || current,
-                                matchedTitle: matched.title,
-                                resultsScanned: totalScanned,
-                                position: pageIndex * 10 + matched.organicIndex + 1,
-                                resultPage: pageIndex + 1,
-                                monitoring: true,
-                                interactionStatus: 'opened',
-                                keepAliveStarted: false,
-                                ranAt
-                            } };
-                        };
-                        // Preserve the previous total landing window while
-                        // waiting solely for navigation from the title click.
-                        const navigationDeadline = Date.now() + 8_500;
-                        while (Date.now() < navigationDeadline) {
-                            if (measurementToken != null &&
-                                !this.isMeasurementSessionCurrent(id, measurementToken)) {
-                                return {
-                                    browserId: id,
-                                    status: 'monitoring',
-                                    landedUrl: wc.getURL(),
-                                    resultsScanned: totalScanned,
-                                    monitoring: true,
-                                    ranAt
-                                };
-                            }
-                            // Google can populate href after hydration or a first
-                            // click. The isolated watcher keeps observing that link.
-                            const resolved = managed.googleState?.match;
-                            if (matched.unresolved && resolved?.url &&
-                                (0, seo_1.hostMatchesTarget)(resolved.url, targetHost)) {
-                                matched = resolved;
-                                wc.send('dom:google-click', managed.googleConfig.navigation);
-                            }
-                            const landing = verifyTargetLanding();
-                            if (landing.result) return landing.result;
-                            await delay(75);
-                        }
-                        // A commit can arrive during the final poll's delay.
-                        // Check it once more, then reuse that same URL snapshot
-                        // for any failure so a landed target is not rejected.
-                        const finalLanding = verifyTargetLanding();
-                        if (finalLanding.result) return finalLanding.result;
-                        if (!(0, seo_1.hostMatchesTarget)(matched.url, targetHost)) {
-                            this.stopGoogleRecognition(managed, measurementToken);
-                            totalScanned += pageMaxObserved;
-                            return { browserId: id, status: 'matched', landedUrl: finalLanding.url,
-                                matchedTitle: matched.title, resultsScanned: totalScanned,
-                                position: pageIndex * 10 + matched.organicIndex + 1, resultPage: pageIndex + 1,
-                                monitoring: true, interactionStatus: 'click-failed', keepAliveStarted: false,
-                                error: 'The target publisher is visible, but Google did not resolve or open its title link. DOM will retry this page without paginating.', ranAt };
-                        }
-                        // Success must follow a click on this Google result's
-                        // title. An ignored click remains an explicit failure.
+                        this.stopGoogleRecognition(managed, measurementToken);
                         totalScanned += pageMaxObserved;
                         return {
-                            browserId: id,
-                            status: 'matched',
-                            landedUrl: finalLanding.url,
-                            matchedUrl: matched.url,
-                            matchedTitle: matched.title,
-                            resultsScanned: totalScanned,
-                            position: pageIndex * 10 + matched.organicIndex + 1,
-                            resultPage: pageIndex + 1,
-                            monitoring: true,
-                            interactionStatus: 'click-failed',
-                            error: 'Target appeared in Google, but clicking its result title did not open the target website.',
-                            keepAliveStarted: false,
-                            ranAt
+                            browserId: id, status: 'matched', landedUrl: wc.getURL(),
+                            matchedUrl: matched.url || undefined, matchedTitle: matched.title,
+                            resultsScanned: totalScanned, position: pageIndex * 10 + matched.organicIndex + 1,
+                            resultPage: pageIndex + 1, monitoring: true,
+                            interactionStatus: 'hovered', keepAliveStarted: false, ranAt
                         };
                     }
                     if (watcher.targetTextSeen) {
