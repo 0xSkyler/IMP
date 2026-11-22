@@ -12,6 +12,10 @@ const SeoAutomationManager_1 = require("./SeoAutomationManager");
 const registerIpc_1 = require("./ipc/registerIpc");
 const Logger_1 = require("./Logger");
 const browser_1 = require("../shared/types/browser");
+// Use a distinct Electron identity so IMP and DOM never share profile data
+// or the Windows taskbar application identity.
+electron_1.app.setName("IMP");
+if (process.platform === "win32") electron_1.app.setAppUserModelId("com.imp.desktop");
 // Recovered renderer assets are available in both source and packaged runs.
 const isDev = process.env.NODE_ENV === 'development';
 if (process.platform === 'linux' && process.env.DOM_SOFTWARE_RENDERING === '1') {
@@ -34,7 +38,7 @@ async function createWindowShell() {
         minWidth: 1050,
         minHeight: 720,
         backgroundColor: '#0f1115',
-        title: 'DOM SEO Tracker Lite',
+        title: 'IMP Watch-only Research',
         show: false,
         webPreferences: {
             preload: node_path_1.default.join(__dirname, '../preload/preload.js'),
@@ -98,7 +102,7 @@ async function bootstrap() {
     // Keep Alive is automatic after a matched Google result.
     browserManager.configureKeepAlive(60_000, 1, false);
     await loadRenderer();
-    Logger_1.logger.info('application', 'DOM SEO Tracker Lite ready.');
+    Logger_1.logger.info('application', 'IMP Watch-only Research ready.');
 }
 electron_1.app.whenReady().then(() => {
     electron_1.session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
@@ -136,7 +140,7 @@ electron_1.app.on('before-quit', (event) => {
         await browserManager?.destroyAll();
         await Logger_1.logger.close();
     })().catch((err) => {
-        console.error('DOM shutdown failed:', err);
+        console.error('IMP shutdown failed:', err);
     }).finally(() => {
         clearTimeout(deadline);
         shutdownComplete = true;

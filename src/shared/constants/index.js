@@ -16,12 +16,12 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_BROWSER_COUNT = exports.DEFAULT_PROXY_TIMEOUT_MS = exports.MAX_PROXY_TIMEOUT_MS = exports.MIN_PROXY_TIMEOUT_MS = exports.EPHEMERAL_PARTITION_PREFIX = exports.PARTITION_PREFIX = exports.APP_ID = exports.APP_NAME = void 0;
 __exportStar(require("./countries"), exports);
-exports.APP_NAME = 'DOM';
-exports.APP_ID = 'com.dom.desktop';
+exports.APP_NAME = 'IMP';
+exports.APP_ID = 'com.imp.desktop';
 /** Partition name prefix for each browser workspace's isolated session. */
-exports.PARTITION_PREFIX = 'persist:browser-';
+exports.PARTITION_PREFIX = 'persist:imp-browser-';
 /** Partition prefix used when "Persist browser sessions" is OFF (in-memory, per-run isolation). */
-exports.EPHEMERAL_PARTITION_PREFIX = 'browser-ephemeral-';
+exports.EPHEMERAL_PARTITION_PREFIX = 'imp-browser-ephemeral-';
 exports.MIN_PROXY_TIMEOUT_MS = 1000;
 exports.MAX_PROXY_TIMEOUT_MS = 60000;
 exports.DEFAULT_PROXY_TIMEOUT_MS = 8000;

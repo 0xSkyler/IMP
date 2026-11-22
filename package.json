@@ -1,9 +1,9 @@
 {
-  "name": "dom",
-  "productName": "DOM",
+  "name": "imp",
+  "productName": "IMP",
   "version": "0.5.29",
-  "description": "DOM v0.5.29, simultaneous multi-keyword desktop application",
-  "author": "DOM",
+  "description": "IMP v0.5.29, independent watch-only research application",
+  "author": "IMP",
   "license": "MIT",
   "private": true,
   "main": "src/main/main.js",
@@ -24,8 +24,8 @@
     "playwright-core": "1.62.1"
   },
   "build": {
-    "appId": "com.dom.desktop",
-    "productName": "DOM",
+    "appId": "com.imp.desktop",
+    "productName": "IMP",
     "asar": true,
     "directories": {
       "output": "release-linux"
@@ -48,13 +48,14 @@
         "tar.gz"
       ],
       "category": "Utility",
-      "artifactName": "DOM-v${version}-linux-${arch}.${ext}"
+      "artifactName": "IMP-v${version}-linux-${arch}.${ext}"
     },
     "win": {
       "target": [
         "nsis"
       ],
-      "artifactName": "DOM-v${version}-Windows-${arch}-Setup.${ext}"
+      "artifactName": "IMP-v${version}-Windows-${arch}-Setup.${ext}",
+      "executableName": "IMP"
     },
     "nsis": {
       "oneClick": false,
@@ -63,7 +64,7 @@
       "runAfterFinish": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "DOM"
+      "shortcutName": "IMP"
     }
   },
   "linuxRelease": "v0.5.29",

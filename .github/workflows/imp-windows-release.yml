@@ -29,11 +29,11 @@ jobs:
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
 
-      - name: Validate unchanged DOM application structure
+      - name: Validate IMP application structure
         run: npm run check
 
-      - name: Test IMP hover-only behavior and keyword progression
-        run: node --test tests/imp-watch-only.test.cjs
+      - name: Test IMP hover-only behavior and standalone identity
+        run: node --test tests/imp-watch-only.test.cjs tests/imp-coexistence.test.cjs tests/proxy-rotation.test.cjs tests/proxy-tiers.test.cjs tests/search-engines.test.cjs
 
       - name: Build Windows installer
         run: npm run package:windows
@@ -49,13 +49,16 @@ jobs:
           const path = require('node:path');
           const { _electron } = require('playwright-core');
           (async () => {
-              const exe = path.resolve('release-windows/win-unpacked/DOM.exe');
+              const exe = path.resolve('release-windows/win-unpacked/IMP.exe');
               const application = await _electron.launch({ executablePath: exe, timeout: 20000 });
               try {
                   const window = await application.firstWindow({ timeout: 20000 });
                   await window.waitForLoadState('domcontentloaded', { timeout: 20000 });
                   assert.match(window.url(), /src\/renderer\/index\.html/);
-                  console.log('Windows packaged DOM application opened its renderer successfully.');
+                  const identity = await application.evaluate(({ app }) => ({ name: app.getName(), userData: app.getPath('userData') }));
+                  assert.equal(identity.name, 'IMP');
+                  assert.equal(path.basename(identity.userData).toLowerCase(), 'imp');
+                  console.log('IMP executable launched with its own userData profile:', identity.userData);
               } finally {
                   await application.close();
               }
@@ -65,7 +68,7 @@ jobs:
       - name: Generate Windows installer SHA256
         shell: pwsh
         run: |
-          $name = 'DOM-v0.5.29-Windows-x64-Setup.exe'
+          $name = 'IMP-v0.5.29-Windows-x64-Setup.exe'
           $installer = Join-Path 'release-windows' $name
           if (!(Test-Path $installer)) { throw "Missing installer: $installer" }
           $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
@@ -73,9 +76,9 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: IMP-DOM-v0.5.29-watch-only-Windows-x64
+          name: IMP-v0.5.29-standalone-Windows-x64
           path: |
-            release-windows/DOM-v0.5.29-Windows-x64-Setup.exe
+            release-windows/IMP-v0.5.29-Windows-x64-Setup.exe
             release-windows/SHA256SUMS-windows.txt
           if-no-files-found: error
 
@@ -85,7 +88,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='imp-v0.5.29-watch-only.1'
+          tag='imp-v0.5.29-standalone.2'
           cat > release-notes.md <<'NOTES'
           IMP watch-only research build based on DOM v0.5.29.
 
@@ -97,11 +100,11 @@ jobs:
           Existing browser, proxy and other settings are retained.
           Original repository 0xSkyler/ProxyDesk is unchanged.
 
-          Installer: DOM-v0.5.29-Windows-x64-Setup.exe (original DOM branding retained).
+          Installer: IMP-v0.5.29-Windows-x64-Setup.exe. IMP has a separate Windows executable, installer identity, shortcuts and user profile.
           SHA256SUMS-windows.txt contains the installer SHA256.
           NOTES
           files=(
-            release-windows/DOM-v0.5.29-Windows-x64-Setup.exe
+            release-windows/IMP-v0.5.29-Windows-x64-Setup.exe
             release-windows/SHA256SUMS-windows.txt
           )
           if gh release view "$tag" >/dev/null 2>&1; then
@@ -109,6 +112,6 @@ jobs:
           else
             gh release create "$tag" "${files[@]}" \
               --target "$GITHUB_SHA" \
-              --title "IMP - DOM v0.5.29 Watch-only Windows" \
+              --title "IMP v0.5.29 - Standalone Windows (Runs beside DOM)" \
               --notes-file release-notes.md
           fi
