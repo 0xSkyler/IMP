@@ -1,0 +1,96 @@
+name: IMP watch-only Windows release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/imp-windows-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: imp-watch-only-windows-release
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Validate unchanged DOM application structure
+        run: npm run check
+
+      - name: Test IMP hover-only behavior and keyword progression
+        run: node --test tests/imp-watch-only.test.cjs
+
+      - name: Build Windows installer
+        run: npm run package:windows
+
+      - name: Validate production application archive
+        run: node scripts/check-package.cjs release-windows/win-unpacked/resources/app.asar
+
+      - name: Check native application startup
+        run: node scripts/smoke-runtime.cjs release-windows/win-unpacked/DOM.exe
+
+      - name: Generate Windows installer SHA256
+        shell: pwsh
+        run: |
+          $name = 'DOM-v0.5.29-Windows-x64-Setup.exe'
+          $installer = Join-Path 'release-windows' $name
+          if (!(Test-Path $installer)) { throw "Missing installer: $installer" }
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          "$hash  $name" | Set-Content 'release-windows/SHA256SUMS-windows.txt' -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: IMP-DOM-v0.5.29-watch-only-Windows-x64
+          path: |
+            release-windows/DOM-v0.5.29-Windows-x64-Setup.exe
+            release-windows/SHA256SUMS-windows.txt
+          if-no-files-found: error
+
+      - name: Publish release with verified Windows installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag='imp-v0.5.29-watch-only.1'
+          cat > release-notes.md <<'NOTES'
+          IMP watch-only research build based on DOM v0.5.29.
+
+          Changes in IMP:
+          - Hover over a verified matching search result for five seconds without clicking its title or opening the target website.
+          - Continue through the supplied keyword list within each browser during the same cycle.
+          - Do not start target-site Keep Alive after a result is observed.
+
+          Existing browser, proxy and other settings are retained.
+          Original repository 0xSkyler/ProxyDesk is unchanged.
+
+          Installer: DOM-v0.5.29-Windows-x64-Setup.exe (original DOM branding retained).
+          SHA256SUMS-windows.txt contains the installer SHA256.
+          NOTES
+          files=(
+            release-windows/DOM-v0.5.29-Windows-x64-Setup.exe
+            release-windows/SHA256SUMS-windows.txt
+          )
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "IMP - DOM v0.5.29 Watch-only Windows" \
+              --notes-file release-notes.md
+          fi
