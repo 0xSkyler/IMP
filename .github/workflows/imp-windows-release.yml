@@ -41,8 +41,26 @@ jobs:
       - name: Validate production application archive
         run: node scripts/check-package.cjs release-windows/win-unpacked/resources/app.asar
 
-      - name: Check native application startup
-        run: node scripts/smoke-runtime.cjs release-windows/win-unpacked/DOM.exe
+      - name: Verify packaged native Electron launch
+        shell: pwsh
+        run: |
+          @'
+          const assert = require('node:assert/strict');
+          const path = require('node:path');
+          const { _electron } = require('playwright-core');
+          (async () => {
+              const exe = path.resolve('release-windows/win-unpacked/DOM.exe');
+              const application = await _electron.launch({ executablePath: exe, timeout: 20000 });
+              try {
+                  const window = await application.firstWindow({ timeout: 20000 });
+                  await window.waitForLoadState('domcontentloaded', { timeout: 20000 });
+                  assert.match(window.url(), /src\/renderer\/index\.html/);
+                  console.log('Windows packaged DOM application opened its renderer successfully.');
+              } finally {
+                  await application.close();
+              }
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          '@ | node
 
       - name: Generate Windows installer SHA256
         shell: pwsh
