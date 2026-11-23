@@ -1,4 +1,4 @@
-name: IMP hardened failover Windows release
+name: IMP periodic storage cleanup Windows release
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
         run: npm run check
 
       - name: Test IMP hover-only behavior and standalone identity
-        run: node --test tests/imp-watch-only.test.cjs tests/imp-coexistence.test.cjs tests/imp-proxy-persistence.test.cjs tests/proxy-rotation.test.cjs tests/proxy-tiers.test.cjs tests/search-engines.test.cjs
+        run: node --test tests/imp-ten-cycle-cleanup.test.cjs tests/imp-watch-only.test.cjs tests/imp-coexistence.test.cjs tests/imp-proxy-persistence.test.cjs tests/proxy-rotation.test.cjs tests/proxy-tiers.test.cjs tests/search-engines.test.cjs
 
       - name: Build Windows installer
         run: npm run package:windows
@@ -84,7 +84,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: IMP-v0.5.29-hardened-failover-Windows-x64
+          name: IMP-v0.5.29-ten-cycle-cleanup-Windows-x64
           path: |
             release-windows/IMP-v0.5.29-Windows-x64-Setup.exe
             release-windows/SHA256SUMS-windows.txt
@@ -96,7 +96,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='imp-v0.5.29-accurate-failover.5'
+          tag='imp-v0.5.29-ten-cycle-cleanup.6'
           cat > release-notes.md <<'NOTES'
           IMP watch-only research build based on DOM v0.5.29.
 
@@ -114,6 +114,9 @@ jobs:
           - Retry exhausted source refreshes with a cooldown, and reconsider old failed endpoints after 30 minutes.
           - Never reassign the currently failing endpoint to its own browser, including after blacklist expiry.
           - Deduplicate failed endpoints in the replacement request, keeping healthy and failed browser accounting consistent.
+          - After cycles 10, 20, 30..., and before the next cycle begins, clear IMP channel logs, each browser's HTTP cache, Cache Storage, and localStorage.
+          - Keep cookies, configured search keywords, IMP shell settings, browser identity, and assigned proxy routing intact.
+          - Retry unsuccessful storage cleanup on subsequent cycles.
 
           Existing browser, proxy and other settings are retained.
           Original repository 0xSkyler/ProxyDesk is unchanged.
@@ -130,6 +133,6 @@ jobs:
           else
             gh release create "$tag" "${files[@]}" \
               --target "$GITHUB_SHA" \
-              --title "IMP v0.5.29 - Accurate Proxy Failover v5 (Standalone)" \
+              --title "IMP v0.5.29 - Ten-cycle Cache, Logs & LocalStorage Cleanup (Standalone)" \
               --notes-file release-notes.md
           fi
