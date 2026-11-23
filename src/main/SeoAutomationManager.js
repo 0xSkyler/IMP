@@ -38,6 +38,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
     activeSessions = new Map();
     repairingBrowsers = new Map();
     failedProxyEndpoints = new Map();
+    failedProxyTimes = new Map();
     proxyFetchQueue = Promise.resolve();
     state = {
         running: false,
@@ -137,6 +138,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         this.activeSessions.clear();
         this.repairingBrowsers.clear();
         this.failedProxyEndpoints.clear();
+        this.failedProxyTimes.clear();
         // Publish state before any browser preparation. The Start button therefore
         // reacts instantly even if Electron still has browser shells to create.
         this.state = {
@@ -302,13 +304,13 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         for (const health of rotationStates.values()) {
             if (health.proxy && this.proxyHasError(health)) this.rememberFailedProxy(health.proxy);
         }
-        const retained = cycleNumber > 1 ? browserIds.filter(id => {
+        const retained = browserIds.filter(id => {
             const health = rotationStates.get(id);
             return health.proxy && belongsToSelectedTier(health.proxy) && !this.proxyHasError(health);
-        }).map(browserId => ({ browserId, proxy: rotationStates.get(browserId).proxy, retained: true })) : [];
+        }).map(browserId => ({ browserId, proxy: rotationStates.get(browserId).proxy, retained: true }));
         const retainedIds = new Set(retained.map(assignment => assignment.browserId));
         const replacementIds = browserIds.filter(id => !retainedIds.has(id));
-        const failedProxies = Array.from(this.failedProxyEndpoints.values());
+        const failedProxies = this.getFailedProxies();
         this.state = {
             ...this.state,
             cycleInProgress: true,
@@ -333,29 +335,10 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                 this.browserManager.cancelMeasurementSession(id);
                 this.browserManager.setBrowserKeepAlive(id, false, false);
             }
-            const cleanupController = this.cycleController;
-            const signal = cleanupController.signal;
-            let nextBrowser = 0;
-            const cleanBrowser = async () => {
-                while (nextBrowser < browserIds.length && this.isCurrent(generation) && !signal.aborted) {
-                    const id = browserIds[nextBrowser++];
-                    if (!retainedIds.has(id)) {
-                        await waitForPreparation(this.browserManager.assignProxy(id, null), 15_000, signal,
-                            `Browser ${id} proxy reset timed out before the next cycle.`);
-                    }
-                    if (!this.isCurrent(generation) || signal.aborted) return;
-                    await waitForPreparation(this.browserManager.prepareCycleDocument(id, signal), 15_000, signal,
-                        `Browser ${id} page preparation timed out before the next cycle.`);
-                    if (!this.isCurrent(generation) || signal.aborted) return;
-                }
-            };
-            // Bound page preparation to two browsers at a time on small PCs.
-            // Proxy fetching/searching starts only after all pages are released.
-            // Each released document's session data is cleared before searches.
-            try {
-                await Promise.all(Array.from({ length: Math.min(2, browserIds.length) }, cleanBrowser));
-            } catch (error) { cleanupController.abort(); throw error; }
-            if (!this.isCurrent(generation) || signal.aborted) return;
+            // Only a failed proxy should change routing. A cycle boundary must
+            // not clear cookies, cache, browser pages or assigned routes.
+            // Next keyword navigation reuses the same BrowserView.
+            if (!this.isCurrent(generation) || this.cycleController.signal.aborted) return;
             for (const assignment of retained) {
                 const browserQuery = browserQueries.get(assignment.browserId);
                 seoTasks.push(this.handleAssignment(generation, cycleNumber, assignment, browserQuery,
@@ -547,8 +530,20 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             health.connectionStatus === 'proxy-failed' || health.connectionStatus === 'crashed'));
     }
     rememberFailedProxy(proxy) {
-        if (proxy?.host && proxy.port)
-            this.failedProxyEndpoints.set(String(proxy.host).toLowerCase() + ':' + proxy.port, proxy);
+        if (!proxy?.host || !proxy.port) return;
+        const key = String(proxy.host).toLowerCase() + ':' + proxy.port;
+        if (!this.failedProxyEndpoints.has(key)) this.failedProxyTimes.set(key, Date.now());
+        this.failedProxyEndpoints.set(key, proxy);
+    }
+    getFailedProxies() {
+        // The free proxy feed changes; reconsider errors only after 30 minutes.
+        const now = Date.now();
+        for (const [key, at] of this.failedProxyTimes) {
+            if (now - at < 30 * 60_000) continue;
+            this.failedProxyTimes.delete(key);
+            this.failedProxyEndpoints.delete(key);
+        }
+        return Array.from(this.failedProxyEndpoints.values());
     }
     queueProxyFetch(operation) {
         // The provider has one mutable fetch controller. Serialize initial
@@ -604,13 +599,19 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                             .filter(item => item.proxy && (this.proxyHasError(item.health)
                                 ? !this.failedProxyEndpoints.has(String(item.proxy.host).toLowerCase() + ':' + item.proxy.port)
                                 : true));
-                        await this.proxyManager.fetchAssignDirect([browserId], assignment => {
-                            replacement = assignment.proxy;
-                        }, undefined, {
+                        const options = {
                             source: this.state.proxySource, endpoint: this.state.proxyApiUrl,
                             tier: this.state.proxyTier, retainedAssignments,
-                            failedProxies: Array.from(this.failedProxyEndpoints.values())
-                        });
+                            failedProxies: this.getFailedProxies()
+                        };
+                        if (typeof this.proxyManager.replaceFailedProxy === 'function') {
+                            replacement = await this.proxyManager.replaceFailedProxy(browserId, options);
+                        } else {
+                            // Support simple proxy-manager adapters used in tests.
+                            await this.proxyManager.fetchAssignDirect([browserId], assignment => {
+                                replacement = assignment.proxy;
+                            }, undefined, options);
+                        }
                         if (stillCurrent() && replacement) {
                             // Keep the replacement route reserved until setProxy
                             // finishes. A second failing browser cannot acquire it.
@@ -625,6 +626,14 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                 }
                 if (!stillCurrent()) return;
                 if (resumed) {
+                    // Keep assigned/new counters in sync after mid-cycle repair.
+                    const assignedBrowsers = this.state.browserIds.filter(id => {
+                        const health = this.browserManager.getProxyRotationState(id);
+                        return health.proxy && !this.proxyHasError(health);
+                    }).length;
+                    this.state = { ...this.state, assignedBrowsers,
+                        replacedBrowsers: this.state.replacedBrowsers + 1 };
+                    this.emitState();
                     this.emit('seoResult', { cycleNumber: session.cycleNumber, result: {
                         browserId, status: 'monitoring',
                         error: 'Failed proxy replaced; continuing keyword ' + session.query,
@@ -633,6 +642,13 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                     return;
                 }
                 if (replacement) this.rememberFailedProxy(replacement);
+                if (!replacement && !providerError) {
+                    this.emit('seoResult', { cycleNumber: session.cycleNumber, result: {
+                        browserId, status: 'error',
+                        error: 'No unused proxy available in the selected source; retrying without disconnecting.',
+                        ranAt: new Date().toISOString()
+                    } });
+                }
                 if (providerError) {
                     this.emit('seoResult', { cycleNumber: session.cycleNumber, result: {
                         browserId, status: 'error',
