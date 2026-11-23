@@ -507,10 +507,13 @@ class BrowserManager extends node_events_1.EventEmitter {
     }
     getProxyRotationState(id) {
         const managed = this.get(id);
-        return { proxy: managed.state.proxy, ...managed.proxyHealth };
+        return { proxy: managed.state.proxy, ...managed.proxyHealth,
+            connectionStatus: managed.state.connectionStatus, errorMessage: managed.state.errorMessage };
     }
     beginProxyCycle(id) {
-        this.get(id).proxyHealth = { googleReached: false, targetOpened: false, captchaSeen: false, failed: false };
+        // Proof of reaching Google persists for the life of the assigned proxy.
+        // Failures are sticky until an actual replacement assigns a new route.
+        this.get(id).proxyHealth.targetOpened = false;
     }
     async prepareCycleDocument(id, signal) {
         // Release the outgoing page and any navigation that was still

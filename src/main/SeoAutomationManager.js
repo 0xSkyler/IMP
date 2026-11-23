@@ -35,6 +35,10 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
     generation = 0;
     pendingCycle = false;
     cycleController = createCycleController();
+    activeSessions = new Map();
+    repairingBrowsers = new Map();
+    failedProxyEndpoints = new Map();
+    proxyFetchQueue = Promise.resolve();
     state = {
         running: false,
         cycleInProgress: false,
@@ -65,6 +69,15 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         this.proxyManager = proxyManager;
         this.browserManager = browserManager;
         this.ensureBrowserCount = ensureBrowserCount;
+        // A failed connection, proxy error, CAPTCHA or renderer crash is repaired
+        // without restarting healthy browsers or waiting for the next cycle.
+        this.browserManager.on?.('stateChanged', (state) => {
+            if (!this.state.running || !state?.proxy ||
+                (state.connectionStatus !== 'proxy-failed' && state.connectionStatus !== 'crashed')) return;
+            const session = this.activeSessions.get(state.id);
+            if (session && this.sessionActive(session))
+                void this.repairFailedProxy(session, state.errorMessage || state.connectionStatus);
+        });
     }
     getState() {
         return { ...this.state, browserIds: [...this.state.browserIds] };
@@ -121,6 +134,9 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         this.cycleController.abort();
         this.cycleController = createCycleController();
         this.pendingCycle = false;
+        this.activeSessions.clear();
+        this.repairingBrowsers.clear();
+        this.failedProxyEndpoints.clear();
         // Publish state before any browser preparation. The Start button therefore
         // reacts instantly even if Electron still has browser shells to create.
         this.state = {
@@ -216,6 +232,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         this.cycleController.abort();
         this.generation += 1;
         this.pendingCycle = false;
+        this.activeSessions.clear();
         this.proxyManager.cancelCurrentFetch();
         this.stopTimerOnly();
         for (const id of this.state.browserIds) {
@@ -266,6 +283,9 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             return;
         const generation = this.generation;
         this.cycleController.abort();
+        this.activeSessions.clear();
+        this.repairingBrowsers.clear();
+        this.proxyManager.cancelCurrentFetch();
         this.cycleController = createCycleController();
         const cycleNumber = this.state.cycleNumber + 1;
         const browserIds = [...this.state.browserIds];
@@ -273,23 +293,22 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         const keywords = parseAutomationKeywords(query);
         const browserQueries = new Map(browserIds.map((browserId, index) =>
             [browserId, keywords[(index + cycleNumber - 1) % keywords.length] ?? query]));
-        // Retain already-successful proxies for the next cycle, including
-        // when a country tier is selected. Historical success is NOT a live
-        // connectivity, latency, geolocation, or health preflight. Proxies
-        // outside the user's selected tier cannot be retained.
+        // A proxy that reaches Google remains assigned across every later cycle
+        // until an actual connection error, CAPTCHA or renderer failure occurs.
+        // A missing target is not a proxy failure, nor is slow result rendering.
         const rotationStates = new Map(browserIds.map(id => [id, this.browserManager.getProxyRotationState(id)]));
         const belongsToSelectedTier = proxy => !proxyTier ||
             (0, ProxyTiers_1.matchesProxyTier)(proxy.countryCode, proxyTier);
+        for (const health of rotationStates.values()) {
+            if (health.proxy && this.proxyHasError(health)) this.rememberFailedProxy(health.proxy);
+        }
         const retained = cycleNumber > 1 ? browserIds.filter(id => {
             const health = rotationStates.get(id);
-            return health.proxy && belongsToSelectedTier(health.proxy) &&
-                health.googleReached && !health.captchaSeen && !health.failed;
+            return health.proxy && belongsToSelectedTier(health.proxy) && !this.proxyHasError(health);
         }).map(browserId => ({ browserId, proxy: rotationStates.get(browserId).proxy, retained: true })) : [];
         const retainedIds = new Set(retained.map(assignment => assignment.browserId));
         const replacementIds = browserIds.filter(id => !retainedIds.has(id));
-        const failedProxies = cycleNumber > 1
-            ? replacementIds.map(id => rotationStates.get(id).proxy)
-                .filter(proxy => proxy && belongsToSelectedTier(proxy)) : [];
+        const failedProxies = Array.from(this.failedProxyEndpoints.values());
         this.state = {
             ...this.state,
             cycleInProgress: true,
@@ -344,7 +363,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             }
             // Healthy browsers start the next keyword even if the provider is
             // unavailable. An all-healthy cycle needs no API request at all.
-            if (replacementIds.length) await this.proxyManager.fetchAssignDirect(replacementIds, (assignment) => {
+            if (replacementIds.length) await this.queueProxyFetch(() => this.proxyManager.fetchAssignDirect(replacementIds, (assignment) => {
                 if (!this.isCurrent(generation) || this.state.cycleNumber !== cycleNumber)
                     return;
                 const browserQuery = browserQueries.get(assignment.browserId) ?? query;
@@ -362,7 +381,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                     replacedBrowsers: assigned
                 };
                 this.emitState();
-            }, { source: proxySource, endpoint: proxyApiUrl, tier: proxyTier, retainedAssignments: retained, failedProxies });
+            }, { source: proxySource, endpoint: proxyApiUrl, tier: proxyTier, retainedAssignments: retained, failedProxies }));
             await Promise.allSettled(seoTasks);
             if (!this.isCurrent(generation))
                 return;
@@ -394,7 +413,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             }
         }
     }
-    async handleAssignment(generation, cycleNumber, assignment, query, targetWebsite, controlledTestHost, maxPages, searchEngine) {
+    async handleAssignment(generation, cycleNumber, assignment, query, targetWebsite, controlledTestHost, maxPages, searchEngine, progress = {}) {
         if (!assignment.proxy || !this.isCurrent(generation) || this.state.cycleNumber !== cycleNumber)
             return;
         const { browserId, proxy } = assignment;
@@ -405,9 +424,22 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                 return;
             this.browserManager.setBrowserKeepAlive(browserId, false, false);
             const measurementToken = this.browserManager.startMeasurementSession(browserId);
-            // Run the measurement loop for the lifetime of this proxy cycle. Each
-            // browser is invalidated as soon as the next rotation begins.
-            void this.monitorBrowserSession(generation, cycleNumber, browserId, measurementToken, query, targetWebsite, controlledTestHost, maxPages, searchEngine);
+            const session = {
+                generation, cycleNumber, browserId, token: measurementToken,
+                query, targetWebsite, controlledTestHost, maxPages, searchEngine,
+                completed: progress.completed || 0
+            };
+            this.activeSessions.set(browserId, session);
+            // A repaired browser resumes its interrupted keyword, not keyword A.
+            // Finished browsers retain their proxy but do not redo completed work.
+            if (session.completed < parseAutomationKeywords(this.state.query).length) {
+                void this.monitorBrowserSession(generation, cycleNumber, browserId, measurementToken,
+                    query, targetWebsite, controlledTestHost, maxPages, searchEngine).catch((error) => {
+                    if (this.sessionActive(session))
+                        void this.repairFailedProxy(session, error.message || String(error));
+                });
+            }
+            return true;
         }
         catch (err) {
             if (!this.isCurrent(generation))
@@ -422,6 +454,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                     ranAt: new Date().toISOString()
                 }
             });
+            return false;
         }
     }
     async monitorBrowserSession(generation, cycleNumber, browserId, measurementToken, query, targetWebsite, controlledTestHost, maxPages, searchEngine) {
@@ -429,7 +462,8 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         const observationIntervalMs = 30_000;
         const keywords = parseAutomationKeywords(this.state.query);
         let keywordIndex = Math.max(0, keywords.indexOf(query));
-        let completed = 0;
+        const session = this.activeSessions.get(browserId);
+        let completed = session?.completed || 0;
         const interactionHost = controlledTestHost || (0, seo_1.normalizeTargetHost)(targetWebsite);
         if (!interactionHost)
             return;
@@ -456,6 +490,10 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                         ranAt: new Date().toISOString()
                     }
                 });
+                if (session && this.sessionActive(session)) {
+                    void this.repairFailedProxy(session, err.message);
+                    return;
+                }
                 await cancellableDelay(5_000, signal);
                 continue;
             }
@@ -464,12 +502,24 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                 !this.browserManager.isMeasurementSessionCurrent(browserId, measurementToken)) {
                 return;
             }
+            const health = this.browserManager.getProxyRotationState?.(browserId);
+            if (this.proxyHasError(health) || result.status === 'error' || result.status === 'paused') {
+                this.emit('seoResult', { cycleNumber, result: { ...result, query } });
+                if (session && this.sessionActive(session)) {
+                    void this.repairFailedProxy(session, result.error ||
+                        (health?.captchaSeen ? 'Search engine challenge detected' : result.status));
+                    return;
+                }
+            }
             if (result.status === 'matched' && result.interactionStatus === 'hovered') {
                 this.emit('seoResult', { cycleNumber, result: { ...result, query } });
                 completed += 1;
+                if (session) session.completed = completed;
                 if (completed >= keywords.length) return;
                 keywordIndex = (keywordIndex + 1) % keywords.length;
                 query = keywords[keywordIndex];
+                if (session) session.query = query;
+                // Keep exactly the same BrowserView, session and proxy.
                 continue;
             }
             this.emit('seoResult', { cycleNumber, result });
@@ -490,6 +540,107 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             // sleeping for 30 seconds and then reloading it away.
             await cancellableDelay(result.status === 'monitoring' ? 250 : observationIntervalMs, signal);
         }
+    }
+    proxyHasError(health) {
+        return Boolean(health && (health.failed || health.captchaSeen ||
+            health.connectionStatus === 'proxy-failed' || health.connectionStatus === 'crashed'));
+    }
+    rememberFailedProxy(proxy) {
+        if (proxy?.host && proxy.port)
+            this.failedProxyEndpoints.set(String(proxy.host).toLowerCase() + ':' + proxy.port, proxy);
+    }
+    queueProxyFetch(operation) {
+        // The provider has one mutable fetch controller. Serialize initial
+        // assignments and mid-cycle repair so neither cancels the other.
+        const current = this.proxyFetchQueue.catch(() => {}).then(operation);
+        this.proxyFetchQueue = current.catch(() => {});
+        return current;
+    }
+    sessionActive(session) {
+        return this.isCurrent(session.generation) &&
+            this.state.cycleNumber === session.cycleNumber &&
+            this.activeSessions.get(session.browserId) === session &&
+            !this.cycleController.signal.aborted &&
+            this.browserManager.isMeasurementSessionCurrent(session.browserId, session.token);
+    }
+    repairFailedProxy(session, reason) {
+        const browserId = session.browserId;
+        if (this.repairingBrowsers.has(browserId))
+            return this.repairingBrowsers.get(browserId);
+        const task = (async () => {
+            if (!this.sessionActive(session)) return;
+            const failed = this.browserManager.getProxyRotationState(browserId).proxy;
+            if (!failed) return;
+            this.rememberFailedProxy(failed);
+            // Prevent concurrent workers from searching on the failed route.
+            this.activeSessions.delete(browserId);
+            this.browserManager.cancelMeasurementSession(browserId);
+            this.emit('seoResult', { cycleNumber: session.cycleNumber, result: {
+                browserId, status: 'error',
+                error: 'Replacing failed proxy: ' + (reason || 'connection error'),
+                ranAt: new Date().toISOString()
+            } });
+            const signal = this.cycleController.signal;
+            const stillCurrent = () => this.isCurrent(session.generation) &&
+                this.state.cycleNumber === session.cycleNumber && !signal.aborted;
+            while (stillCurrent()) {
+                let replacement = null;
+                let providerError = null;
+                try {
+                    await this.queueProxyFetch(async () => {
+                        if (!stillCurrent()) return;
+                        // Reserve every healthy browser's endpoint so a failed
+                        // slot cannot steal a route from another browser.
+                        const retainedAssignments = this.state.browserIds.filter(id => id !== browserId)
+                            .map(id => {
+                                const health = this.browserManager.getProxyRotationState(id);
+                                return { browserId: id, proxy: health.proxy || this.proxyManager.getAssignment?.(id),
+                                    health };
+                            })
+                            .filter(item => item.proxy && !this.proxyHasError(item.health));
+                        await this.proxyManager.fetchAssignDirect([browserId], assignment => {
+                            replacement = assignment.proxy;
+                        }, undefined, {
+                            source: this.state.proxySource, endpoint: this.state.proxyApiUrl,
+                            tier: this.state.proxyTier, retainedAssignments,
+                            failedProxies: Array.from(this.failedProxyEndpoints.values())
+                        });
+                    });
+                } catch (error) {
+                    providerError = error;
+                }
+                if (!stillCurrent()) return;
+                if (replacement) {
+                    const resumed = await this.handleAssignment(session.generation, session.cycleNumber,
+                        { browserId, proxy: replacement }, session.query, session.targetWebsite,
+                        session.controlledTestHost, session.maxPages, session.searchEngine,
+                        { completed: session.completed });
+                    if (resumed) {
+                        this.emit('seoResult', { cycleNumber: session.cycleNumber, result: {
+                            browserId, status: 'monitoring',
+                            error: 'Failed proxy replaced; continuing keyword ' + session.query,
+                            ranAt: new Date().toISOString()
+                        } });
+                        return;
+                    }
+                    this.rememberFailedProxy(replacement);
+                }
+                if (providerError) {
+                    this.emit('seoResult', { cycleNumber: session.cycleNumber, result: {
+                        browserId, status: 'error',
+                        error: 'Proxy replacement unavailable: ' + providerError.message,
+                        ranAt: new Date().toISOString()
+                    } });
+                }
+                await cancellableDelay(5_000, signal);
+            }
+        })();
+        this.repairingBrowsers.set(browserId, task);
+        void task.finally(() => {
+            if (this.repairingBrowsers.get(browserId) === task)
+                this.repairingBrowsers.delete(browserId);
+        });
+        return task;
     }
     isCurrent(generation) {
         return this.state.running && generation === this.generation;
