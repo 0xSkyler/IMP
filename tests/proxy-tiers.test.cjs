@@ -378,7 +378,6 @@ test('tier selection keeps error-free proxies and replaces failed or out-of-tier
     assert.deepEqual(Array.from(requests[0].options.failedProxies, p => p.id), ['old-2'],
         'an out-of-tier address is not treated as an in-tier failed candidate');
     assert.deepEqual(events, [
-        ['assign', 2, null], ['assign', 3, null],
         ['retain', 1], ['assign', 2, 'new-2'], ['assign', 3, 'new-3']
     ]);
     assert.equal(automation.getState().retainedBrowsers, 1);

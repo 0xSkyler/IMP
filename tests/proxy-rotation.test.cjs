@@ -39,7 +39,7 @@ test('only failed slots rotate, retained browsers keep routing and move to the n
     });
     await f.automation.runCycle();
     assert.deepEqual(fetchedIds, [3]);
-    assert.deepEqual(f.events.filter(e => e[0] === 'proxy'), [['proxy', 3, null], ['proxy', 3, 'proxy-4']]);
+    assert.deepEqual(f.events.filter(e => e[0] === 'proxy'), [['proxy', 3, 'proxy-4']]);
     assert.deepEqual(f.events.filter(e => e[0] === 'search'), [['search', 1, 'second', 2], ['search', 2, 'third', 2], ['search', 3, 'first', 2]]);
     assert.deepEqual(Array.from(options.retainedAssignments, a => a.proxy.id), ['proxy-1', 'proxy-2']);
     assert.deepEqual(Array.from(options.failedProxies, p => p.id), ['proxy-3']);
@@ -88,7 +88,7 @@ test('a replacement API outage leaves healthy proxies and their new keyword sear
         { proxy: proxy(2), googleReached: false, targetOpened: false, captchaSeen: false, failed: true }
     ], async () => { throw new Error('Provider is offline'); });
     await f.automation.runCycle();
-    assert.deepEqual(f.events.filter(e => e[0] === 'proxy'), [['proxy', 2, null]]);
+    assert.deepEqual(f.events.filter(e => e[0] === 'proxy'), []);
     assert.deepEqual(f.events.filter(e => e[0] === 'search'), [['search', 1, 'second', 2]]);
     assert.equal(f.automation.state.lastError, 'Provider is offline');
     assert.equal(f.automation.state.retainedBrowsers, 1);

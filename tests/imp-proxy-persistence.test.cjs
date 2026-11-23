@@ -200,3 +200,109 @@ test('two simultaneous failures receive different replacement proxies; healthy t
         'second repair must reserve the first repaired browser route');
     manager.stop();
 });
+
+test('real ProxyManager caches candidate pool and preserves every healthy assignment during a failed-slot replacement', async () => {
+    const source = Array.from({ length: 12 }, (_, i) => 'http://192.0.2.' + (i + 1) + ':8080').join('\n');
+    let requests = 0;
+    const { ProxyManager } = loadTree(root, {}, {
+        fetch: async () => {
+            requests++;
+            return { ok: true, text: async () => source };
+        }
+    })('main/ProxyManager.js');
+    const manager = new ProxyManager();
+    const assigned = new Map();
+    await manager.fetchAssignDirect([1, 2, 3], a => assigned.set(a.browserId, a.proxy));
+    assert.equal(requests, 1);
+    const held = assigned.get(1), failed = assigned.get(2), third = assigned.get(3);
+    const replacement = await manager.replaceFailedProxy(2, {
+        retainedAssignments: [{ browserId: 1, proxy: held }, { browserId: 3, proxy: third }],
+        failedProxies: [failed]
+    });
+    assert.ok(replacement);
+    assert.notEqual(replacement.host + ':' + replacement.port, failed.host + ':' + failed.port);
+    assert.notEqual(replacement.host + ':' + replacement.port, held.host + ':' + held.port);
+    assert.equal(requests, 1, 'failover must reuse cached candidates instead of contacting provider again');
+    assert.equal(manager.getAssignment(1).host, held.host, 'other browser route was overwritten');
+    assert.equal(manager.getAssignment(3).host, third.host, 'other browser route was overwritten');
+    assert.equal(manager.getAssignment(2).host, replacement.host);
+});
+
+test('exhausted failover pool does not drop healthy assignments or repeatedly fetch proxy API', async () => {
+    const feed = ['http://192.0.2.1:8080', 'http://192.0.2.2:8080'].join('\n');
+    let requests = 0;
+    const { ProxyManager } = loadTree(root, {}, {
+        fetch: async () => {
+            requests++;
+            return { ok: true, text: async () => feed };
+        }
+    })('main/ProxyManager.js');
+    const manager = new ProxyManager();
+    const assigned = [];
+    await manager.fetchAssignDirect([1, 2], a => assigned.push(a));
+    const healthy = assigned[0].proxy, failed = assigned[1].proxy;
+    const options = {
+        retainedAssignments: [{ browserId: 1, proxy: healthy }],
+        failedProxies: [failed]
+    };
+    assert.equal(await manager.replaceFailedProxy(2, options), null);
+    assert.equal(await manager.replaceFailedProxy(2, options), null);
+    assert.equal(requests, 2, 'one rate-limited refresh after exhaustion; no fetch per retry');
+    assert.equal(manager.getAssignment(1).host, healthy.host);
+});
+
+test('failovers for different failed browsers reserve unique proxies from cached pool', async () => {
+    const feed = Array.from({ length: 7 }, (_, i) => 'http://192.0.2.' + (i + 1) + ':8080').join('\n');
+    let requests = 0;
+    const { ProxyManager } = loadTree(root, {}, {
+        fetch: async () => { requests++; return { ok: true, text: async () => feed }; }
+    })('main/ProxyManager.js');
+    const manager = new ProxyManager(), initial = new Map();
+    await manager.fetchAssignDirect([1, 2, 3], a => initial.set(a.browserId, a.proxy));
+    const first = await manager.replaceFailedProxy(2, {
+        retainedAssignments: [{ browserId: 1, proxy: initial.get(1) }],
+        failedProxies: [initial.get(2), initial.get(3)]
+    });
+    const second = await manager.replaceFailedProxy(3, {
+        retainedAssignments: [{ browserId: 1, proxy: initial.get(1) }, { browserId: 2, proxy: first }],
+        failedProxies: [initial.get(2), initial.get(3)]
+    });
+    assert.notEqual(first.host, second.host);
+    assert.equal(manager.getAssignment(1).host, initial.get(1).host);
+    assert.equal(requests, 1);
+});
+
+test('cycle boundaries keep browser profile and existing failed proxy until a replacement is secured', async () => {
+    const { SeoAutomationManager } = loadTree(root, {})('main/SeoAutomationManager.js');
+    const proxy = n => ({ id: 'p'+n, protocol:'http', host:'192.0.2.'+n, port:8080 });
+    const health = new Map([
+        [1, { proxy: proxy(1), googleReached: true, failed:false, captchaSeen:false }],
+        [2, { proxy: proxy(2), googleReached: true, failed:true, captchaSeen:false }]
+    ]);
+    const events = [], browser = {
+        getProxyRotationState: id => health.get(id),
+        cancelMeasurementSession: id => events.push(['cancel',id]),
+        setBrowserKeepAlive: () => {},
+        beginProxyCycle: id => events.push(['keep',id]),
+        prepareCycleDocument: () => { throw Error('Cycle must not erase browser cookies or cache'); },
+        assignProxy: async (id, value) => {
+            assert.ok(value, 'Never disconnect failed proxy until new route exists');
+            events.push(['new', id, value.id]);
+            health.set(id, {proxy:value,googleReached:false,failed:false,captchaSeen:false});
+        },
+        startMeasurementSession: () => 1
+    };
+    const provider = {
+        cancelCurrentFetch: () => {},
+        fetchAssignDirect: async (_ids, assign) => assign({browserId:2,proxy:proxy(3)})
+    };
+    const app = new SeoAutomationManager(provider,browser,async()=>[]);
+    app.state={...app.state,running:true,cycleNumber:1,browserIds:[1,2],query:'a,b',
+        targetWebsite:'test.example'};
+    app.monitorBrowserSession=async()=>{};
+    await app.runCycle();
+    assert.ok(events.some(x=>x[0]==='keep'&&x[1]===1));
+    assert.ok(events.some(x=>x[0]==='new'&&x[1]===2&&x[2]==='p3'));
+    assert.ok(!events.some(x=>x[0]==='new'&&x[1]===1));
+    app.stop();
+});
