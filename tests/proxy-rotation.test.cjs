@@ -192,7 +192,8 @@ test('inline CAPTCHA detection is sticky across recovery and cannot be supplied 
         assert.equal(manager.getProxyRotationState(1).targetOpened, true);
         assert.equal(manager.getProxyRotationState(1).captchaSeen, true, 'opening a target after CAPTCHA does not erase it');
         manager.beginProxyCycle(1);
-        assert.equal(manager.getProxyRotationState(1).captchaSeen, false);
+        assert.equal(manager.getProxyRotationState(1).captchaSeen, true,
+            'CAPTCHA stays failed until an actual proxy replacement');
         assert.equal(manager.getProxyRotationState(1).targetOpened, false);
     } finally { await manager.destroyAll(); }
 });

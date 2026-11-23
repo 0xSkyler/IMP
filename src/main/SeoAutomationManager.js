@@ -285,7 +285,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         this.cycleController.abort();
         this.activeSessions.clear();
         this.repairingBrowsers.clear();
-        this.proxyManager.cancelCurrentFetch();
+        this.proxyManager.cancelCurrentFetch?.();
         this.cycleController = createCycleController();
         const cycleNumber = this.state.cycleNumber + 1;
         const browserIds = [...this.state.browserIds];
