@@ -1,13 +1,10 @@
-name: IMP sticky-proxy Windows release
+name: IMP accurate failover Windows release
 
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/imp-windows-release.yml'
-      - 'src/main/SeoAutomationManager.js'
-      - 'src/main/BrowserManager.js'
-      - 'tests/imp-proxy-persistence.test.cjs'
   workflow_dispatch:
 
 permissions:
@@ -15,7 +12,7 @@ permissions:
 
 concurrency:
   group: imp-watch-only-windows-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build-and-publish:
@@ -87,7 +84,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: IMP-v0.5.29-sticky-proxy-Windows-x64
+          name: IMP-v0.5.29-accurate-failover-Windows-x64
           path: |
             release-windows/IMP-v0.5.29-Windows-x64-Setup.exe
             release-windows/SHA256SUMS-windows.txt
@@ -99,7 +96,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='imp-v0.5.29-sticky-proxy.3'
+          tag='imp-v0.5.29-accurate-failover.4'
           cat > release-notes.md <<'NOTES'
           IMP watch-only research build based on DOM v0.5.29.
 
@@ -110,6 +107,11 @@ jobs:
           - Keep an assigned browser proxy across cycles as long as no connection, CAPTCHA or renderer error occurs.
           - If a proxy fails, replace it within the current cycle, keep every healthy browser untouched, and resume the interrupted keyword on the same browser.
           - If a verified result has no usable hover coordinates, observe it for five seconds and proceed without clicking.
+          - Reuse unused candidates from the fetched proxy pool without re-downloading the provider list for every failed browser.
+          - Preserve every existing browser assignment until a different proxy is secured; never blank a browser at cycle boundaries.
+          - Retry unassigned browsers during the current cycle; reserve unique endpoints across concurrent failures.
+          - Distinguish proxy/network errors from result-recognition errors; show a truthful waiting state if the source is exhausted.
+          - Retry exhausted source refreshes with a cooldown, and reconsider old failed endpoints after 30 minutes.
 
           Existing browser, proxy and other settings are retained.
           Original repository 0xSkyler/ProxyDesk is unchanged.
@@ -126,6 +128,6 @@ jobs:
           else
             gh release create "$tag" "${files[@]}" \
               --target "$GITHUB_SHA" \
-              --title "IMP v0.5.29 - Sticky Proxy and Mid-cycle Failover (Standalone)" \
+              --title "IMP v0.5.29 - Accurate Proxy Failover (Standalone)" \
               --notes-file release-notes.md
           fi
