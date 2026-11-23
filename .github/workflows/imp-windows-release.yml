@@ -113,6 +113,7 @@ jobs:
           - Distinguish proxy/network errors from result-recognition errors; show a truthful waiting state if the source is exhausted.
           - Retry exhausted source refreshes with a cooldown, and reconsider old failed endpoints after 30 minutes.
           - Never reassign the currently failing endpoint to its own browser, including after blacklist expiry.
+          - Deduplicate failed endpoints in the replacement request, keeping healthy and failed browser accounting consistent.
 
           Existing browser, proxy and other settings are retained.
           Original repository 0xSkyler/ProxyDesk is unchanged.
