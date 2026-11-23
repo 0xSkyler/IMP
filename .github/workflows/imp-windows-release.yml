@@ -1,10 +1,14 @@
-name: IMP periodic storage cleanup Windows release
+name: IMP black-screen UI recovery Windows release
 
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/imp-windows-release.yml'
+      - 'src/main/RendererHealthSupervisor.js'
+      - 'src/main/main.js'
+      - 'src/main/ipc/registerIpc.js'
+      - 'tests/imp-renderer-recovery.test.cjs'
       - 'src/main/Logger.js'
       - 'src/main/BrowserManager.js'
       - 'src/main/SeoAutomationManager.js'
@@ -37,7 +41,7 @@ jobs:
         run: npm run check
 
       - name: Test IMP hover-only behavior and standalone identity
-        run: node --test tests/imp-ten-cycle-cleanup.test.cjs tests/imp-watch-only.test.cjs tests/imp-coexistence.test.cjs tests/imp-proxy-persistence.test.cjs tests/proxy-rotation.test.cjs tests/proxy-tiers.test.cjs tests/search-engines.test.cjs
+        run: node --test tests/imp-renderer-recovery.test.cjs tests/imp-ten-cycle-cleanup.test.cjs tests/imp-watch-only.test.cjs tests/imp-coexistence.test.cjs tests/imp-proxy-persistence.test.cjs tests/proxy-rotation.test.cjs tests/proxy-tiers.test.cjs tests/search-engines.test.cjs
 
       - name: Build Windows installer
         run: npm run package:windows
@@ -67,6 +71,19 @@ jobs:
                   assert.ok(renderer, 'IMP renderer window never appeared: ' +
                       application.windows().map(w => w.url()).join(', '));
                   await renderer.waitForLoadState('domcontentloaded', { timeout: 20000 });
+                  // A loaded HTML document can still display a blank black
+                  // control panel. Verify that React actually mounted.
+                  await renderer.locator('.seo-tracker h1').waitFor({ state: 'visible', timeout: 20000 });
+                  await renderer.locator('main.lite-browser-area').waitFor({ state: 'visible', timeout: 20000 });
+                  const before = await application.evaluate(({ BrowserWindow }) =>
+                      BrowserWindow.getAllWindows()[0].getBrowserViews().map(view => view.webContents.id));
+                  // Reproduce the reported condition: the shell becomes blank
+                  // but the native browser tabs remain alive underneath.
+                  await renderer.evaluate(() => document.getElementById('root').replaceChildren());
+                  await renderer.locator('.seo-tracker h1').waitFor({ state: 'visible', timeout: 45000 });
+                  const after = await application.evaluate(({ BrowserWindow }) =>
+                      BrowserWindow.getAllWindows()[0].getBrowserViews().map(view => view.webContents.id));
+                  assert.deepEqual(after, before, 'UI recovery must preserve native browser WebContents');
                   const identity = await application.evaluate(({ app }) => ({ name: app.getName(), userData: app.getPath('userData') }));
                   assert.equal(identity.name, 'IMP');
                   assert.equal(path.basename(identity.userData).toLowerCase(), 'imp');
@@ -88,7 +105,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: IMP-v0.5.29-ten-cycle-cleanup-Windows-x64
+          name: IMP-v0.5.29-ui-recovery-Windows-x64
           path: |
             release-windows/IMP-v0.5.29-Windows-x64-Setup.exe
             release-windows/SHA256SUMS-windows.txt
@@ -100,7 +117,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag='imp-v0.5.29-ten-cycle-cleanup.6'
+          tag='imp-v0.5.29-ui-recovery.7'
           cat > release-notes.md <<'NOTES'
           IMP watch-only research build based on DOM v0.5.29.
 
@@ -121,6 +138,8 @@ jobs:
           - After cycles 10, 20, 30..., and before the next cycle begins, clear IMP channel logs, each browser's HTTP cache, Cache Storage, and localStorage.
           - Keep cookies, configured search keywords, IMP shell settings, browser identity, and assigned proxy routing intact.
           - Retry unsuccessful storage cleanup on subsequent cycles.
+          - Detect blank, missing or crashed React control panels; automatically reload only the IMP interface without restarting native BrowserViews, proxies or keyword sessions.
+          - Rate-limit recovery to prevent repeated reload loops and tolerate temporary shell lag.
 
           Existing browser, proxy and other settings are retained.
           Original repository 0xSkyler/ProxyDesk is unchanged.
@@ -137,6 +156,6 @@ jobs:
           else
             gh release create "$tag" "${files[@]}" \
               --target "$GITHUB_SHA" \
-              --title "IMP v0.5.29 - Ten-cycle Cache, Logs & LocalStorage Cleanup (Standalone)" \
+              --title "IMP v0.5.29 - Black-screen UI Recovery (Standalone)" \
               --notes-file release-notes.md
           fi

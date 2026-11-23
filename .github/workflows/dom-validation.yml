@@ -24,5 +24,5 @@ jobs:
           node-version: '20'
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - run: node --test tests/imp-ten-cycle-cleanup.test.cjs tests/imp-watch-only.test.cjs tests/imp-coexistence.test.cjs tests/imp-proxy-persistence.test.cjs tests/proxy-rotation.test.cjs tests/proxy-tiers.test.cjs tests/search-engines.test.cjs
+      - run: node --test tests/imp-renderer-recovery.test.cjs tests/imp-ten-cycle-cleanup.test.cjs tests/imp-watch-only.test.cjs tests/imp-coexistence.test.cjs tests/imp-proxy-persistence.test.cjs tests/proxy-rotation.test.cjs tests/proxy-tiers.test.cjs tests/search-engines.test.cjs
       - run: npm run check
