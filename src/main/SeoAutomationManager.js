@@ -503,7 +503,11 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                 return;
             }
             const health = this.browserManager.getProxyRotationState?.(browserId);
-            if (this.proxyHasError(health) || result.status === 'error' || result.status === 'paused') {
+            // Recognition/markup errors are not proof that a proxy is dead.
+            // Replace only connection, transport and search-engine challenge failures.
+            if (this.proxyHasError(health) ||
+                (result.status === 'error' && this.isProxyNetworkError(result.error)) ||
+                result.status === 'paused') {
                 this.emit('seoResult', { cycleNumber, result: { ...result, query } });
                 if (session && this.sessionActive(session)) {
                     void this.repairFailedProxy(session, result.error ||
@@ -554,6 +558,10 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         };
         this.activeSessions.set(browserId, session);
         void this.repairFailedProxy(session, 'No usable proxy assigned; seeking an unused replacement');
+    }
+    isProxyNetworkError(error) {
+        const message = String(error || '');
+        return /ERR_(?:PROXY|TUNNEL|CONNECTION|TIMED_OUT|NETWORK|INTERNET|NAME_NOT_RESOLVED|SOCKS|ADDRESS_UNREACHABLE|CONNECTION_RESET|CONNECTION_REFUSED|CONNECTION_CLOSED)|proxy (?:connection|navigation|request|server).*?(?:fail|error|timed out)|navigation timed out while using this proxy/i.test(message);
     }
     proxyHasError(health) {
         return Boolean(health && (health.failed || health.captchaSeen ||
