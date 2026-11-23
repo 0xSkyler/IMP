@@ -119,7 +119,7 @@ test('observer detaches after window closes and does not reload dead webContents
 });
 
 test('health probe requires the actual controls and IPC, not merely DOMContentLoaded', () => {
-    assert.match(HEALTH_SCRIPT, /\\.lite-shell \\.seo-tracker/);
-    assert.match(HEALTH_SCRIPT, /\\.lite-shell \\.lite-browser-area/);
-    assert.match(HEALTH_SCRIPT, /window\\.app/);
+    assert.ok(HEALTH_SCRIPT.includes('.lite-shell .seo-tracker'));
+    assert.ok(HEALTH_SCRIPT.includes('.lite-shell .lite-browser-area'));
+    assert.ok(HEALTH_SCRIPT.includes('window.app'));
 });
