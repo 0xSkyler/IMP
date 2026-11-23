@@ -178,7 +178,10 @@ class ProxyManager extends node_events_1.EventEmitter {
                 onAssignment({ browserId, proxy }, total, total);
             }
             for (let index = assignedCount; index < browserIds.length; index += 1) {
-                this.assignments.set(browserIds[index], null);
+                // Do not erase the actual previously assigned (failed) route
+                // before a replacement is found; it remains visible in IMP.
+                if (!this.assignments.has(browserIds[index]))
+                    this.assignments.set(browserIds[index], null);
             }
             const summary = this.summary(browserIds, total, orderedProxies.length, countryMatched.length, tier);
             this.emit('assignmentsChanged', summary);
