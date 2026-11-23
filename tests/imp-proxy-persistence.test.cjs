@@ -92,7 +92,7 @@ test('after a match the same browser searches the next keyword; only actual erro
     ]);
     assert.deepEqual(assignments, [[1, 'proxy-2']], 'A to B never changes proxy');
     assert.deepEqual(providerCalls[0].ids, [1]);
-    assert.deepEqual(providerCalls[0].options.failedProxies.map(p => p.id), ['proxy-1']);
+    assert.deepEqual(Array.from(providerCalls[0].options.failedProxies, p => p.id), ['proxy-1']);
     manager.stop();
 });
 
@@ -138,7 +138,7 @@ test('connection failure event replaces only that browser and reserves healthy b
     assert.deepEqual(assigned, [[2, 'proxy-3']]);
     assert.deepEqual(requests[0].ids, [2]);
     assert.deepEqual(requests[0].options.retainedAssignments.map(a => a.browserId), [1]);
-    assert.deepEqual(requests[0].options.failedProxies.map(p => p.id), ['proxy-2']);
+    assert.deepEqual(Array.from(requests[0].options.failedProxies, p => p.id), ['proxy-2']);
     assert.equal(health.get(1).proxy.id, 'proxy-1');
     manager.stop();
 });

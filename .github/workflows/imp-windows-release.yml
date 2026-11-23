@@ -1,10 +1,13 @@
-name: IMP watch-only Windows release
+name: IMP sticky-proxy Windows release
 
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/imp-windows-release.yml'
+      - 'src/main/SeoAutomationManager.js'
+      - 'src/main/BrowserManager.js'
+      - 'tests/imp-proxy-persistence.test.cjs'
   workflow_dispatch:
 
 permissions:
@@ -98,6 +101,7 @@ jobs:
           - Do not start target-site Keep Alive after a result is observed.
           - Keep an assigned browser proxy across cycles as long as no connection, CAPTCHA or renderer error occurs.
           - If a proxy fails, replace it within the current cycle, keep every healthy browser untouched, and resume the interrupted keyword on the same browser.
+          - If a verified result has no usable hover coordinates, observe it for five seconds and proceed without clicking.
 
           Existing browser, proxy and other settings are retained.
           Original repository 0xSkyler/ProxyDesk is unchanged.

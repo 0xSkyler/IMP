@@ -984,9 +984,21 @@ class BrowserManager extends node_events_1.EventEmitter {
                             } catch { point = null; }
                         }
                         if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-                            return { browserId: id, status: 'monitoring', landedUrl: wc.getURL(),
-                                monitoring: true, resultsScanned: totalScanned,
-                                error: 'Target result found; waiting for a visible hover point.', ranAt };
+                            // The target is verified even when dynamically rendered
+                            // markup hides its pointer coordinates. Keep watch-only,
+                            // wait five seconds, then advance instead of looping on
+                            // the same keyword for the rest of the cycle.
+                            await delay(5_000);
+                            if (measurementToken != null && !this.isMeasurementSessionCurrent(id, measurementToken))
+                                return { browserId: id, status: 'monitoring', monitoring: true, ranAt };
+                            this.stopGoogleRecognition(managed, measurementToken);
+                            totalScanned += pageMaxObserved;
+                            return { browserId: id, status: 'matched', landedUrl: wc.getURL(),
+                                matchedUrl: matched.url || undefined, matchedTitle: matched.title,
+                                resultsScanned: totalScanned, position: pageIndex * 10 + matched.organicIndex + 1,
+                                resultPage: pageIndex + 1, monitoring: true, interactionStatus: 'observed',
+                                keepAliveStarted: false, error: 'Matching result observed; hover coordinates unavailable.',
+                                ranAt };
                         }
                         if (measurementToken != null && !this.isMeasurementSessionCurrent(id, measurementToken))
                             return { browserId: id, status: 'monitoring', monitoring: true, ranAt };

@@ -511,7 +511,8 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                     return;
                 }
             }
-            if (result.status === 'matched' && result.interactionStatus === 'hovered') {
+            if (result.status === 'matched' && (result.interactionStatus === 'hovered' ||
+                result.interactionStatus === 'observed')) {
                 this.emit('seoResult', { cycleNumber, result: { ...result, query } });
                 completed += 1;
                 if (session) session.completed = completed;
@@ -525,8 +526,8 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             this.emit('seoResult', { cycleNumber, result });
             if (result.status === 'paused') {
                 // Leave the current challenge available for manual recovery.
-                // The CAPTCHA flag remains sticky: this proxy will be replaced
-                // at the next cycle even if normal results return meanwhile.
+                // This fallback only runs without an active repairable session.
+                // Active IMP sessions replace CAPTCHA proxies immediately.
                 const recovered = await this.browserManager.waitForGoogleRecovery(browserId, observationIntervalMs, searchEngine);
                 if (!recovered) {
                     await cancellableDelay(1_000, signal);
@@ -586,6 +587,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             while (stillCurrent()) {
                 let replacement = null;
                 let providerError = null;
+                let resumed = false;
                 try {
                     await this.queueProxyFetch(async () => {
                         if (!stillCurrent()) return;
@@ -594,10 +596,14 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                         const retainedAssignments = this.state.browserIds.filter(id => id !== browserId)
                             .map(id => {
                                 const health = this.browserManager.getProxyRotationState(id);
-                                return { browserId: id, proxy: health.proxy || this.proxyManager.getAssignment?.(id),
+                                const reserved = this.proxyManager.getAssignment?.(id);
+                                return { browserId: id,
+                                    proxy: !this.proxyHasError(health) ? (health.proxy || reserved) : reserved,
                                     health };
                             })
-                            .filter(item => item.proxy && !this.proxyHasError(item.health));
+                            .filter(item => item.proxy && (this.proxyHasError(item.health)
+                                ? !this.failedProxyEndpoints.has(String(item.proxy.host).toLowerCase() + ':' + item.proxy.port)
+                                : true));
                         await this.proxyManager.fetchAssignDirect([browserId], assignment => {
                             replacement = assignment.proxy;
                         }, undefined, {
@@ -605,26 +611,28 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                             tier: this.state.proxyTier, retainedAssignments,
                             failedProxies: Array.from(this.failedProxyEndpoints.values())
                         });
+                        if (stillCurrent() && replacement) {
+                            // Keep the replacement route reserved until setProxy
+                            // finishes. A second failing browser cannot acquire it.
+                            resumed = await this.handleAssignment(session.generation, session.cycleNumber,
+                                { browserId, proxy: replacement }, session.query, session.targetWebsite,
+                                session.controlledTestHost, session.maxPages, session.searchEngine,
+                                { completed: session.completed });
+                        }
                     });
                 } catch (error) {
                     providerError = error;
                 }
                 if (!stillCurrent()) return;
-                if (replacement) {
-                    const resumed = await this.handleAssignment(session.generation, session.cycleNumber,
-                        { browserId, proxy: replacement }, session.query, session.targetWebsite,
-                        session.controlledTestHost, session.maxPages, session.searchEngine,
-                        { completed: session.completed });
-                    if (resumed) {
-                        this.emit('seoResult', { cycleNumber: session.cycleNumber, result: {
-                            browserId, status: 'monitoring',
-                            error: 'Failed proxy replaced; continuing keyword ' + session.query,
-                            ranAt: new Date().toISOString()
-                        } });
-                        return;
-                    }
-                    this.rememberFailedProxy(replacement);
+                if (resumed) {
+                    this.emit('seoResult', { cycleNumber: session.cycleNumber, result: {
+                        browserId, status: 'monitoring',
+                        error: 'Failed proxy replaced; continuing keyword ' + session.query,
+                        ranAt: new Date().toISOString()
+                    } });
+                    return;
                 }
+                if (replacement) this.rememberFailedProxy(replacement);
                 if (providerError) {
                     this.emit('seoResult', { cycleNumber: session.cycleNumber, result: {
                         browserId, status: 'error',
@@ -636,7 +644,9 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             }
         })();
         this.repairingBrowsers.set(browserId, task);
-        void task.finally(() => {
+        void task.catch((error) => {
+            Logger_1.logger.warn('application', 'Proxy repair failed: ' + error.message);
+        }).finally(() => {
             if (this.repairingBrowsers.get(browserId) === task)
                 this.repairingBrowsers.delete(browserId);
         });
