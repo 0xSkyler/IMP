@@ -43,10 +43,14 @@ class ProxyManager extends node_events_1.EventEmitter {
     assignments = new Map();
     fetchController = null;
     sourceCursors = new Map();
+    candidatePools = new Map();
+    lastRefreshAttempts = new Map();
     async init() {
         this.cancelCurrentFetch();
         this.allProxies.clear();
         this.assignments.clear();
+        this.candidatePools.clear();
+        this.lastRefreshAttempts.clear();
         Logger_1.logger.info('proxy', 'Proxy manager ready: selectable API direct assignment.');
     }
     getAll() {
@@ -119,9 +123,13 @@ class ProxyManager extends node_events_1.EventEmitter {
             const retained = (sourceOptions.retainedAssignments || []).filter(
                 assignment => !tier || (0, ProxyTiers_1.matchesProxyTier)(assignment.proxy?.countryCode, tier));
             const endpointOf = proxy => `${proxy.host.toLowerCase()}:${proxy.port}`;
+            const requestedSlots = new Set(browserIds);
             const excluded = new Set([
                 ...retained.map(assignment => endpointOf(assignment.proxy)),
-                ...(sourceOptions.failedProxies || []).map(endpointOf)
+                ...(sourceOptions.failedProxies || []).map(endpointOf),
+                // A provider refresh never reallocates an existing live slot.
+                ...Array.from(this.assignments, ([id, proxy]) =>
+                    !requestedSlots.has(id) && proxy ? endpointOf(proxy) : null).filter(Boolean)
             ]);
             // Deduplicate by network endpoint so the same host:port is not assigned
             // to multiple browsers in the same cycle, regardless of protocol label.
@@ -137,6 +145,12 @@ class ProxyManager extends node_events_1.EventEmitter {
             if (proxies.length === 0) {
                 throw new Error(`${source.label} returned no assignable proxy entries for ${tier ? ProxyTiers_1.PROXY_TIERS[tier].label : 'the selected source'}.`);
             }
+            // Cache the whole parsed source once; failover consumes unused
+            // candidates without re-downloading the full list per browser.
+            this.candidatePools.set(this.poolKey(source, tier), {
+                proxies, fetched: parsed.proxies.length,
+                countryMatched: countryMatched.length, fetchedAt: Date.now()
+            });
             // Each rotation advances through the provider list. A dead proxy at
             // the top of a stable public feed therefore cannot pin a browser to
             // the same blank page on every cycle.
@@ -145,7 +159,7 @@ class ProxyManager extends node_events_1.EventEmitter {
             const orderedProxies = [...proxies.slice(cursor), ...proxies.slice(0, cursor)].filter(proxy => !excluded.has(endpointOf(proxy)));
             this.sourceCursors.set(cursorKey, (cursor + browserIds.length) % proxies.length);
             this.allProxies.clear();
-            this.assignments.clear();
+            // Other browsers' assignments survive a single-slot replacement.
             for (const assignment of retained) this.assignments.set(assignment.browserId, assignment.proxy);
             for (const proxy of orderedProxies)
                 this.allProxies.set(proxy.id, proxy);
@@ -176,6 +190,44 @@ class ProxyManager extends node_events_1.EventEmitter {
                 this.fetchController = null;
         }
     }
+    poolKey(source,tier) { return source.id+'|'+source.endpoint+'|'+(tier||'all-tiers'); }
+    async replaceFailedProxy(browserId, sourceOptions={}) {
+    const source = resolveProxySource(sourceOptions.source,sourceOptions.endpoint);
+    const tier = sourceOptions.tier == null ? null : (0, ProxyTiers_1.resolveProxyTier)(sourceOptions.tier);
+    const key = this.poolKey(source,tier);
+    const endpointOf = proxy=>`${proxy.host.toLowerCase()}:${proxy.port}`;
+    const excluded = new Set([
+        ...(sourceOptions.failedProxies||[]).filter(Boolean).map(endpointOf),
+        ...(sourceOptions.retainedAssignments||[]).filter(a=>a.proxy).map(a=>endpointOf(a.proxy)),
+        ...Array.from(this.assignments,([id,proxy])=>id!==browserId&&proxy?endpointOf(proxy):null).filter(Boolean)
+    ]);
+    const pool=this.candidatePools.get(key);
+    if(pool?.proxies?.length){
+        const cursorKey='failover:'+key;
+        const start=(this.sourceCursors.get(cursorKey)||0)%pool.proxies.length;
+        for(let offset=0;offset<pool.proxies.length;offset+=1){
+            const index=(start+offset)%pool.proxies.length;
+            const candidate=pool.proxies[index];
+            if(excluded.has(endpointOf(candidate)))continue;
+            this.sourceCursors.set(cursorKey,(index+1)%pool.proxies.length);
+            this.assignments.set(browserId,candidate);
+            this.allProxies.set(candidate.id,candidate);
+            this.emit('assignmentsChanged',this.summary([browserId],pool.fetched,pool.proxies.length,pool.countryMatched,tier));
+            Logger_1.logger.info('proxy',`Browser ${browserId}: reserved unused candidate ${candidate.host}:${candidate.port} from cached ${source.label} pool.`);
+            return candidate;
+        }
+    }
+    // No unused candidate is left. Only refresh the free provider at most
+    // once per 30 seconds, rather than one request per failed browser.
+    const now=Date.now(),lastAttempt=this.lastRefreshAttempts.get(key)||0;
+    if(now-lastAttempt<30_000)return null;
+    this.lastRefreshAttempts.set(key,now);
+    let replacement=null;
+    await this.fetchAssignDirect([browserId],assignment=>{replacement=assignment.proxy;},undefined,{
+        ...sourceOptions,source:source.id,endpoint:source.endpoint,tier
+    });
+    return replacement;
+}
     summary(browserIds, found, available, countryMatched = found, tier = null) {
         return {
             found,
