@@ -24,7 +24,7 @@ test('browser cleanup removes localStorage and Cache Storage plus HTTP cache wit
     const originalURL = one.view.webContents.getURL();
     const operations = [];
     one.session.clearCache = async () => operations.push('http-cache');
-    one.session.clearStorageData = async options => operations.push(['storage', options.storages]);
+    one.session.clearStorageData = async options => operations.push(['storage', Array.from(options.storages)]);
     two.session.clearCache = async () => { throw Error('unrelated session must be untouched'); };
     two.session.clearStorageData = async () => { throw Error('unrelated session must be untouched'); };
     try {

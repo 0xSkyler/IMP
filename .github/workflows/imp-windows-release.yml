@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/imp-windows-release.yml'
+      - 'src/main/Logger.js'
+      - 'src/main/BrowserManager.js'
+      - 'src/main/SeoAutomationManager.js'
+      - 'tests/imp-ten-cycle-cleanup.test.cjs'
   workflow_dispatch:
 
 permissions:
