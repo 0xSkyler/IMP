@@ -25,7 +25,7 @@ function controllerFixture(health, fetchAssignDirect) {
     return { automation, events, states };
 }
 
-test('only failed/unproven slots rotate, retained browsers keep routing and move to the next keyword', async () => {
+test('only failed slots rotate, retained browsers keep routing and move to the next keyword', async () => {
     let fetchedIds, options;
     const f = controllerFixture([
         { proxy: proxy(1), googleReached: true, targetOpened: true, captchaSeen: false, failed: false },
@@ -85,7 +85,7 @@ test('normal Google results retain a proxy even if its target is absent', async 
 test('a replacement API outage leaves healthy proxies and their new keyword searches intact', async () => {
     const f = controllerFixture([
         { proxy: proxy(1), googleReached: true, targetOpened: true, captchaSeen: false, failed: false },
-        { proxy: proxy(2), googleReached: false, targetOpened: false, captchaSeen: false, failed: false }
+        { proxy: proxy(2), googleReached: false, targetOpened: false, captchaSeen: false, failed: true }
     ], async () => { throw new Error('Provider is offline'); });
     await f.automation.runCycle();
     assert.deepEqual(f.events.filter(e => e[0] === 'proxy'), [['proxy', 2, null]]);

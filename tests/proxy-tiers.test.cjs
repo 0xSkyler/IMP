@@ -340,14 +340,14 @@ test('automation manager carries the user choice into the source request', async
     assert.equal(automation.getState().proxyTier,'tier3');
 });
 
-test('tier selection retains proven successful proxies and only replaces unsuccessful or out-of-tier slots', async () => {
+test('tier selection keeps error-free proxies and replaces failed or out-of-tier slots', async () => {
     const { SeoAutomationManager } = loadTree(root, {})('main/SeoAutomationManager.js');
     const events = [], requests = [];
     const existing = new Map([
         [1, { proxy: { id:'old-1', host:'192.0.2.11', port:8080, countryCode:'PL' },
             googleReached:true, targetOpened:true, captchaSeen:false, failed:false }],
         [2, { proxy: { id:'old-2', host:'192.0.2.12', port:8080, countryCode:'PL' },
-            targetOpened:false, captchaSeen:false, failed:false }],
+            targetOpened:false, captchaSeen:false, failed:true }],
         [3, { proxy: { id:'old-3', host:'192.0.2.13', port:8080, countryCode:'US' },
             googleReached:true, targetOpened:true, captchaSeen:false, failed:false }]
     ]);
@@ -373,7 +373,7 @@ test('tier selection retains proven successful proxies and only replaces unsucce
     await automation.runCycle();
     assert.equal(requests.length, 1);
     assert.equal(requests[0].options.tier, 'tier2');
-    assert.deepEqual(requests[0].ids, [2,3], 'only unsuccessful/out-of-tier slots get new proxies');
+    assert.deepEqual(requests[0].ids, [2,3], 'only failed/out-of-tier slots get new proxies');
     assert.deepEqual(Array.from(requests[0].options.retainedAssignments, a => a.browserId), [1]);
     assert.deepEqual(Array.from(requests[0].options.failedProxies, p => p.id), ['old-2'],
         'an out-of-tier address is not treated as an in-tier failed candidate');
