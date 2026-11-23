@@ -55,9 +55,17 @@ jobs:
               const exe = path.resolve('release-windows/win-unpacked/IMP.exe');
               const application = await _electron.launch({ executablePath: exe, timeout: 20000 });
               try {
-                  const window = await application.firstWindow({ timeout: 20000 });
-                  await window.waitForLoadState('domcontentloaded', { timeout: 20000 });
-                  assert.match(window.url(), /src\/renderer\/index\.html/);
+                  // IMP creates BrowserViews before React finishes loading.
+                  // Playwright's firstWindow may therefore be about:blank.
+                  let renderer = null;
+                  for (let attempt = 0; attempt < 120; attempt++) {
+                      renderer = application.windows().find(w => /src\/renderer\/index\.html/.test(w.url()));
+                      if (renderer) break;
+                      await new Promise(resolve => setTimeout(resolve, 250));
+                  }
+                  assert.ok(renderer, 'IMP renderer window never appeared: ' +
+                      application.windows().map(w => w.url()).join(', '));
+                  await renderer.waitForLoadState('domcontentloaded', { timeout: 20000 });
                   const identity = await application.evaluate(({ app }) => ({ name: app.getName(), userData: app.getPath('userData') }));
                   assert.equal(identity.name, 'IMP');
                   assert.equal(path.basename(identity.userData).toLowerCase(), 'imp');
