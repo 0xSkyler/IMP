@@ -11,6 +11,7 @@ const ProxyManager_1 = require("./ProxyManager");
 const SeoAutomationManager_1 = require("./SeoAutomationManager");
 const registerIpc_1 = require("./ipc/registerIpc");
 const Logger_1 = require("./Logger");
+const { RendererHealthSupervisor } = require("./RendererHealthSupervisor");
 const browser_1 = require("../shared/types/browser");
 // Use a distinct Electron identity so IMP and DOM never share profile data
 // or the Windows taskbar application identity.
@@ -22,6 +23,7 @@ if (process.platform === 'linux' && process.env.DOM_SOFTWARE_RENDERING === '1') 
     electron_1.app.disableHardwareAcceleration();
 }
 let mainWindow = null;
+let rendererHealthSupervisor = null;
 let browserManager;
 let proxyManager;
 let automationManager;
@@ -53,7 +55,12 @@ async function createWindowShell() {
     // suppressing warnings globally; destroyBrowser still removes each view.
     mainWindow.setMaxListeners(browser_1.BROWSER_IDS.length + 10);
     browserManager.attachWindow(mainWindow);
+    // The React controls can fail while native BrowserViews remain active.
+    // This supervisor reloads only the control-panel WebContents.
+    rendererHealthSupervisor = new RendererHealthSupervisor(mainWindow, { logger: Logger_1.logger });
     mainWindow.on('closed', () => {
+        rendererHealthSupervisor?.stop();
+        rendererHealthSupervisor = null;
         mainWindow = null;
     });
     if (process.platform !== 'darwin') mainWindow.on('close', (event) => {
@@ -73,6 +80,7 @@ async function loadRenderer() {
         await mainWindow.loadFile(node_path_1.default.join(__dirname, '../renderer/index.html'));
     }
     mainWindow.show();
+    rendererHealthSupervisor?.start();
 }
 async function ensureBrowserCount(count, options) {
     if (shuttingDown) return [];
@@ -128,6 +136,7 @@ electron_1.app.on('before-quit', (event) => {
     event.preventDefault();
     if (shuttingDown) return;
     shuttingDown = true;
+    rendererHealthSupervisor?.stop();
     automationManager?.stop();
     // A hung Chromium storage operation must not prevent shutdown forever.
     const deadline = setTimeout(() => electron_1.app.exit(0), 10_000);

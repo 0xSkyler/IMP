@@ -26,7 +26,14 @@ function registerIpc(deps) {
     ].map(([emitter, event, channel]) => {
         const listener = (payload) => {
             for (const win of electron_1.BrowserWindow.getAllWindows()) {
-                if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send(channel, payload);
+                if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+                    try {
+                        win.webContents.send(channel, payload);
+                    } catch {
+                        // React shell may be reloading after a renderer failure.
+                        // New subscribers recover current state via getAll/getState.
+                    }
+                }
             }
         };
         emitter.on(event, listener);
