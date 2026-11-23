@@ -306,3 +306,51 @@ test('cycle boundaries keep browser profile and existing failed proxy until a re
     assert.ok(!events.some(x=>x[0]==='new'&&x[1]===1));
     app.stop();
 });
+
+test('empty slot actively retries failed provider assignment without waiting for a new cycle', async () => {
+    const { SeoAutomationManager } = loadTree(root, {})('main/SeoAutomationManager.js');
+    const browser = new EventEmitter();
+    let current = null, token = 0, fetches = 0, repairs = 0, searched = 0;
+    browser.getProxyRotationState = () => ({ proxy: current, googleReached: Boolean(current),
+        failed: false, captchaSeen: false, connectionStatus: current ? 'connected' : 'no-proxy' });
+    browser.cancelMeasurementSession = () => { token++; };
+    browser.startMeasurementSession = () => ++token;
+    browser.isMeasurementSessionCurrent = (_id, value) => token === value;
+    browser.setBrowserKeepAlive = () => {};
+    browser.assignProxy = async (_id, selected) => { current = selected; };
+    browser.broadcastSearch = async () => { searched++; return { status:'matched', interactionStatus:'hovered' }; };
+    const provider = {
+        cancelCurrentFetch() {},
+        fetchAssignDirect: async () => { fetches++; throw Error('Provider temporarily offline'); },
+        replaceFailedProxy: async () => { repairs++; return proxy(7); }
+    };
+    const app = new SeoAutomationManager(provider, browser, async()=>[]);
+    app.state = { ...app.state, running:true, cycleNumber:0, browserIds:[1],
+        query:'keyword A', targetWebsite:'fixture.test' };
+    await app.runCycle();
+    await waitUntil(() => searched > 0);
+    assert.equal(fetches, 1);
+    assert.equal(repairs, 1, 'missing slot must retry through the failover path in the same cycle');
+    assert.equal(current.id, 'proxy-7');
+    assert.equal(app.state.cycleNumber, 1);
+    app.stop();
+});
+
+test('parser errors are not proxy failures but timeout and connection errors are', () => {
+    const { SeoAutomationManager } = loadTree(root, {})('main/SeoAutomationManager.js');
+    const app = new SeoAutomationManager({}, {}, async()=>[]);
+    assert.equal(app.isProxyNetworkError('Google result recognition failed: missing a result anchor'), false);
+    assert.equal(app.isProxyNetworkError('Detected result destination did not match target website'), false);
+    assert.equal(app.isProxyNetworkError('ERR_PROXY_CONNECTION_FAILED'), true);
+    assert.equal(app.isProxyNetworkError('Failed to open Google result page 1: ERR_TIMED_OUT'), true);
+    assert.equal(app.isProxyNetworkError('Google navigation timed out while using this proxy'), true);
+});
+
+test('failed free-proxy endpoints become eligible for reconsideration after cooldown', () => {
+    const { SeoAutomationManager } = loadTree(root, {})('main/SeoAutomationManager.js');
+    const app = new SeoAutomationManager({}, {}, async()=>[]);
+    app.rememberFailedProxy(proxy(1));
+    assert.equal(app.getFailedProxies().length, 1);
+    app.failedProxyTimes.set('192.0.2.1:8080', Date.now() - 31 * 60_000);
+    assert.equal(app.getFailedProxies().length, 0);
+});
