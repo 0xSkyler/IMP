@@ -346,7 +346,9 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             }
             // Healthy browsers start the next keyword even if the provider is
             // unavailable. An all-healthy cycle needs no API request at all.
-            if (replacementIds.length) await this.queueProxyFetch(() => this.proxyManager.fetchAssignDirect(replacementIds, (assignment) => {
+            let providerError = null;
+            if (replacementIds.length) try {
+                await this.queueProxyFetch(() => this.proxyManager.fetchAssignDirect(replacementIds, (assignment) => {
                 if (!this.isCurrent(generation) || this.state.cycleNumber !== cycleNumber)
                     return;
                 const browserQuery = browserQueries.get(assignment.browserId) ?? query;
@@ -365,7 +367,22 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                 };
                 this.emitState();
             }, { source: proxySource, endpoint: proxyApiUrl, tier: proxyTier, retainedAssignments: retained, failedProxies }));
+            } catch (error) {
+                providerError = error;
+                // Failure of the external proxy API must not stop healthy tabs.
+                this.state = { ...this.state, lastError: error.message };
+                this.emitState();
+            }
             await Promise.allSettled(seoTasks);
+            // A short/failed source feed must not leave browsers unassigned
+            // until the NEXT rotation. Each unserved browser retries within
+            // the current cycle using the shared candidate pool and cooldown.
+            for (const id of replacementIds) {
+                if (!this.isCurrent(generation) || this.state.cycleNumber !== cycleNumber) return;
+                if (this.activeSessions.has(id) || this.repairingBrowsers.has(id)) continue;
+                this.retryUnassignedBrowser(generation, cycleNumber, id,
+                    browserQueries.get(id), targetWebsite, controlledTestHost, maxPages, searchEngine);
+            }
             if (!this.isCurrent(generation))
                 return;
             this.state = {
@@ -525,6 +542,19 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
             await cancellableDelay(result.status === 'monitoring' ? 250 : observationIntervalMs, signal);
         }
     }
+    retryUnassignedBrowser(generation, cycleNumber, browserId, query, targetWebsite,
+        controlledTestHost, maxPages, searchEngine) {
+        if (!this.isCurrent(generation) || this.state.cycleNumber !== cycleNumber ||
+            this.activeSessions.has(browserId) || this.repairingBrowsers.has(browserId) ||
+            typeof this.browserManager.isMeasurementSessionCurrent !== 'function') return;
+        const token = this.browserManager.startMeasurementSession(browserId);
+        const session = {
+            generation, cycleNumber, browserId, token, query, targetWebsite,
+            controlledTestHost, maxPages, searchEngine, completed: 0
+        };
+        this.activeSessions.set(browserId, session);
+        void this.repairFailedProxy(session, 'No usable proxy assigned; seeking an unused replacement');
+    }
     proxyHasError(health) {
         return Boolean(health && (health.failed || health.captchaSeen ||
             health.connectionStatus === 'proxy-failed' || health.connectionStatus === 'crashed'));
@@ -566,8 +596,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         const task = (async () => {
             if (!this.sessionActive(session)) return;
             const failed = this.browserManager.getProxyRotationState(browserId).proxy;
-            if (!failed) return;
-            this.rememberFailedProxy(failed);
+            if (failed) this.rememberFailedProxy(failed);
             // Prevent concurrent workers from searching on the failed route.
             this.activeSessions.delete(browserId);
             this.browserManager.cancelMeasurementSession(browserId);
