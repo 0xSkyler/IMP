@@ -593,6 +593,16 @@ class BrowserManager extends node_events_1.EventEmitter {
         for (const managed of this.browsers.values())
             managed.view.webContents.stop();
     }
+    async clearPeriodicBrowserStorage(id, signal) {
+        const managed = this.get(id);
+        // Every tenth completed automation cycle, clear HTTP cache, Cache
+        // Storage and localStorage only. Keep cookies, browser identity,
+        // history, search page, session partition and proxy routing unchanged.
+        await waitForPreparation(Promise.all([
+            managed.session.clearCache(),
+            managed.session.clearStorageData({ storages: ['localstorage', 'cachestorage'] })
+        ]), 15_000, signal, `Browser ${id} periodic cache/localStorage clearing timed out.`);
+    }
     async clearCookies(_id) {
         // Compatibility no-op: never delete browser storage automatically.
     }

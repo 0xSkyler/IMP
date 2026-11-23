@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.logger = void 0;
 const electron_1 = require("electron");
 const node_fs_1 = require("node:fs");
+const fsPromises = require("node:fs/promises");
 const { BoundedLogWriter } = require("./BoundedLogWriter");
 const node_path_1 = __importDefault(require("node:path"));
 const SECRET_PATTERNS = [
@@ -30,6 +31,8 @@ class Logger {
     closed = false;
     streams = {};
     logsDir = null;
+    clearingLogs = null;
+    fileWritesPaused = false;
     ensureDir() {
         if (this.logsDir)
             return this.logsDir;
@@ -58,7 +61,9 @@ class Logger {
         if (this.closed) return;
         const safe = redact(message);
         const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] [${channel}] ${safe}`;
-        const stream = this.streamFor(channel);
+        // Keep console output while a 10-cycle log reset closes old writers.
+        // New file writes resume when the reset is complete.
+        const stream = this.fileWritesPaused ? null : this.streamFor(channel);
         if (stream)
             stream.write(line + '\n');
         // eslint-disable-next-line no-console
@@ -73,8 +78,33 @@ class Logger {
     error(channel, message) {
         this.write(channel, 'error', message);
     }
+    async clearHistory() {
+        if (this.closed) return;
+        if (this.clearingLogs) return this.clearingLogs;
+        this.fileWritesPaused = true;
+        const oldStreams = this.streams;
+        this.streams = {};
+        this.clearingLogs = (async () => {
+            // Flush and close queued writers before deleting on Windows.
+            await Promise.all(Object.values(oldStreams).map((stream) => stream.close()));
+            const dir = this.ensureDir();
+            if (!dir) throw new Error('IMP log directory is unavailable.');
+            const files = await fsPromises.readdir(dir, { withFileTypes: true });
+            // Delete only IMP channel logs and rotation backups, not settings.
+            await Promise.all(files.filter((file) => file.isFile() &&
+                /^[a-z0-9_-]+\.log(?:\.\d+)?$/i.test(file.name))
+                .map((file) => fsPromises.rm(node_path_1.default.join(dir, file.name), { force: true })));
+        })();
+        try {
+            await this.clearingLogs;
+        } finally {
+            this.clearingLogs = null;
+            this.fileWritesPaused = false;
+        }
+    }
     async close() {
         this.closed = true;
+        if (this.clearingLogs) await this.clearingLogs.catch(() => {});
         await Promise.allSettled(Object.values(this.streams).map((stream) => stream.close()));
         this.streams = {};
     }

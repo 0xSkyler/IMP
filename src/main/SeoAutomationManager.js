@@ -40,6 +40,9 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
     failedProxyEndpoints = new Map();
     failedProxyTimes = new Map();
     proxyFetchQueue = Promise.resolve();
+    lastCleanupScheduledThroughCycle = 0;
+    pendingBrowserCleanup = new Set();
+    pendingLogCleanup = false;
     state = {
         running: false,
         cycleInProgress: false,
@@ -139,6 +142,9 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
         this.repairingBrowsers.clear();
         this.failedProxyEndpoints.clear();
         this.failedProxyTimes.clear();
+        this.lastCleanupScheduledThroughCycle = 0;
+        this.pendingBrowserCleanup.clear();
+        this.pendingLogCleanup = false;
         // Publish state before any browser preparation. The Start button therefore
         // reacts instantly even if Electron still has browser shells to create.
         this.state = {
@@ -335,9 +341,21 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                 this.browserManager.cancelMeasurementSession(id);
                 this.browserManager.setBrowserKeepAlive(id, false, false);
             }
-            // Only a failed proxy should change routing. A cycle boundary must
-            // not clear cookies, cache, browser pages or assigned routes.
-            // Next keyword navigation reuses the same BrowserView.
+            // Do not clear storage on ordinary cycles. A batch is due AFTER
+            // cycles 10, 20, 30... and before the following cycle's searches.
+            // Search tokens are already cancelled at this point.
+            const completedBeforeThisCycle = cycleNumber - 1;
+            if (completedBeforeThisCycle > 0 &&
+                completedBeforeThisCycle % 10 === 0 &&
+                this.lastCleanupScheduledThroughCycle < completedBeforeThisCycle) {
+                this.lastCleanupScheduledThroughCycle = completedBeforeThisCycle;
+                for (const id of browserIds) this.pendingBrowserCleanup.add(id);
+                this.pendingLogCleanup = true;
+            }
+            if (this.pendingBrowserCleanup.size || this.pendingLogCleanup) {
+                await this.runPeriodicCleanup(generation, cycleNumber, browserIds);
+            }
+            // Ordinary cycle boundaries retain all browser profiles and routes.
             if (!this.isCurrent(generation) || this.cycleController.signal.aborted) return;
             for (const assignment of retained) {
                 const browserQuery = browserQueries.get(assignment.browserId);
@@ -411,6 +429,47 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                 this.pendingCycle = false;
                 void this.requestCycle();
             }
+        }
+    }
+    async runPeriodicCleanup(generation, cycleNumber, browserIds) {
+        const signal = this.cycleController.signal;
+        const stillCurrent = () => this.isCurrent(generation) &&
+            this.state.cycleNumber === cycleNumber && !signal.aborted;
+        const ids = browserIds.filter(id => this.pendingBrowserCleanup.has(id));
+        let next = 0, cleared = 0, failed = 0;
+        const worker = async () => {
+            while (next < ids.length && stillCurrent()) {
+                const id = ids[next++];
+                try {
+                    await this.browserManager.clearPeriodicBrowserStorage(id, signal);
+                    if (!stillCurrent()) return;
+                    this.pendingBrowserCleanup.delete(id);
+                    cleared++;
+                } catch (error) {
+                    if (!stillCurrent()) return;
+                    failed++;
+                    Logger_1.logger.warn('application',
+                        `Browser ${id} periodic storage cleanup failed: ${error.message}`);
+                    // Keep the browser pending; retry on the next cycle.
+                }
+            }
+        };
+        // Bound concurrent Chromium disk operations, including at 100 browsers.
+        await Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker));
+        if (!stillCurrent()) return;
+        if (this.pendingLogCleanup) {
+            try {
+                await Logger_1.logger.clearHistory?.();
+                if (!stillCurrent()) return;
+                this.pendingLogCleanup = false;
+            } catch (error) {
+                Logger_1.logger.warn('application',
+                    `Periodic log cleanup failed: ${error.message}`);
+            }
+        }
+        if (cleared || failed || ids.length === 0) {
+            Logger_1.logger.info('application',
+                `Ten-cycle cleanup after cycle ${this.lastCleanupScheduledThroughCycle}: ${cleared} browser(s) cleaned, ${failed} failed, ${this.pendingBrowserCleanup.size} pending. Cookies, proxy routes and IMP UI settings preserved.`);
         }
     }
     async handleAssignment(generation, cycleNumber, assignment, query, targetWebsite, controlledTestHost, maxPages, searchEngine, progress = {}) {
