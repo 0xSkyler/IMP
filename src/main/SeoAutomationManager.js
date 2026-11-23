@@ -636,10 +636,15 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                             .filter(item => item.proxy && (this.proxyHasError(item.health)
                                 ? !this.failedProxyEndpoints.has(String(item.proxy.host).toLowerCase() + ':' + item.proxy.port)
                                 : true));
+                        const failedProxies = this.getFailedProxies();
+                        if (failed && !failedProxies.some(proxy =>
+                            String(proxy.host).toLowerCase() === String(failed.host).toLowerCase() &&
+                            String(proxy.port) === String(failed.port))) {
+                            failedProxies.push(failed);
+                        }
                         const options = {
                             source: this.state.proxySource, endpoint: this.state.proxyApiUrl,
-                            tier: this.state.proxyTier, retainedAssignments,
-                            failedProxies: [...this.getFailedProxies(), ...(failed ? [failed] : [])]
+                            tier: this.state.proxyTier, retainedAssignments, failedProxies
                         };
                         if (typeof this.proxyManager.replaceFailedProxy === 'function') {
                             replacement = await this.proxyManager.replaceFailedProxy(browserId, options);
