@@ -639,7 +639,7 @@ class SeoAutomationManager extends node_events_1.EventEmitter {
                         const options = {
                             source: this.state.proxySource, endpoint: this.state.proxyApiUrl,
                             tier: this.state.proxyTier, retainedAssignments,
-                            failedProxies: this.getFailedProxies()
+                            failedProxies: [...this.getFailedProxies(), ...(failed ? [failed] : [])]
                         };
                         if (typeof this.proxyManager.replaceFailedProxy === 'function') {
                             replacement = await this.proxyManager.replaceFailedProxy(browserId, options);
