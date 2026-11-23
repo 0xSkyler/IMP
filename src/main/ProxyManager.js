@@ -199,8 +199,14 @@ class ProxyManager extends node_events_1.EventEmitter {
     const tier = sourceOptions.tier == null ? null : (0, ProxyTiers_1.resolveProxyTier)(sourceOptions.tier);
     const key = this.poolKey(source,tier);
     const endpointOf = proxy=>`${proxy.host.toLowerCase()}:${proxy.port}`;
+    // The failing browser's existing endpoint is never its own replacement,
+    // including after an old failure's blacklist cooldown has expired.
+    const currentFailed = this.assignments.get(browserId);
+    const failedOptions = [
+        ...(sourceOptions.failedProxies||[]), ...(currentFailed ? [currentFailed] : [])
+    ];
     const excluded = new Set([
-        ...(sourceOptions.failedProxies||[]).filter(Boolean).map(endpointOf),
+        ...failedOptions.filter(Boolean).map(endpointOf),
         ...(sourceOptions.retainedAssignments||[]).filter(a=>a.proxy).map(a=>endpointOf(a.proxy)),
         ...Array.from(this.assignments,([id,proxy])=>id!==browserId&&proxy?endpointOf(proxy):null).filter(Boolean)
     ]);
@@ -227,7 +233,8 @@ class ProxyManager extends node_events_1.EventEmitter {
     this.lastRefreshAttempts.set(key,now);
     let replacement=null;
     await this.fetchAssignDirect([browserId],assignment=>{replacement=assignment.proxy;},undefined,{
-        ...sourceOptions,source:source.id,endpoint:source.endpoint,tier
+        ...sourceOptions,source:source.id,endpoint:source.endpoint,tier,
+        failedProxies: failedOptions
     });
     return replacement;
 }
