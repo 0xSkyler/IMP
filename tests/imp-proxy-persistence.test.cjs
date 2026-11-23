@@ -354,3 +354,18 @@ test('failed free-proxy endpoints become eligible for reconsideration after cool
     app.failedProxyTimes.set('192.0.2.1:8080', Date.now() - 31 * 60_000);
     assert.equal(app.getFailedProxies().length, 0);
 });
+
+test('a failed browser can never be reissued its own endpoint even if external blacklist expired', async () => {
+    const feed = 'http://192.0.2.12:8080';
+    let requests = 0;
+    const { ProxyManager } = loadTree(root, {}, {
+        fetch: async () => { requests++; return { ok: true, text: async () => feed }; }
+    })('main/ProxyManager.js');
+    const manager = new ProxyManager(), assigned = [];
+    await manager.fetchAssignDirect([1], a => assigned.push(a.proxy));
+    const original = assigned[0];
+    const replacement = await manager.replaceFailedProxy(1, { failedProxies: [] });
+    assert.equal(replacement, null, 'a single failed address cannot be its own replacement');
+    assert.equal(manager.getAssignment(1).host, original.host);
+    assert.equal(requests, 2, 'provider gets one controlled refresh and does not silently reuse old route');
+});
