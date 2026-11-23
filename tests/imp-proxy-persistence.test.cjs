@@ -31,7 +31,7 @@ test('healthy assigned browser keeps its proxy across cycles even if target is a
         startMeasurementSession: () => 1,
         isMeasurementSessionCurrent: () => true
     };
-    const provider = { fetchAssignDirect: async () => { throw Error('Healthy proxy must not trigger a provider fetch'); } };
+    const provider = { cancelCurrentFetch() {}, fetchAssignDirect: async () => { throw Error('Healthy proxy must not trigger a provider fetch'); } };
     const manager = new SeoAutomationManager(provider, browser, async () => []);
     manager.state = { ...manager.state, running: true, cycleNumber: 1,
         browserIds: [1], query: 'keyword A,keyword B', targetWebsite: 'fixture.test' };
@@ -75,6 +75,7 @@ test('after a match the same browser searches the next keyword; only actual erro
         return { browserId: id, status: 'matched', interactionStatus: 'hovered' };
     };
     const provider = {
+        cancelCurrentFetch() {},
         fetchAssignDirect: async (ids, assign, _progress, options) => {
             providerCalls.push({ ids: [...ids], options });
             assign({ browserId: 1, proxy: proxy(2) });
@@ -118,6 +119,7 @@ test('connection failure event replaces only that browser and reserves healthy b
             failed: false, captchaSeen: false, connectionStatus: 'proxy-checking' });
     };
     const provider = {
+        cancelCurrentFetch() {},
         fetchAssignDirect: async (ids, assign, _progress, options) => {
             requests.push({ ids: [...ids], options });
             assign({ browserId: ids[0], proxy: proxy(3) });
@@ -140,5 +142,61 @@ test('connection failure event replaces only that browser and reserves healthy b
     assert.deepEqual(requests[0].options.retainedAssignments.map(a => a.browserId), [1]);
     assert.deepEqual(Array.from(requests[0].options.failedProxies, p => p.id), ['proxy-2']);
     assert.equal(health.get(1).proxy.id, 'proxy-1');
+    manager.stop();
+});
+
+test('two simultaneous failures receive different replacement proxies; healthy third browser is untouched', async () => {
+    const { SeoAutomationManager } = loadTree(root, {})('main/SeoAutomationManager.js');
+    const browser = new EventEmitter();
+    const health = new Map([1, 2, 3].map(id => [id, {
+        proxy: proxy(id), googleReached: true, failed: false,
+        captchaSeen: false, connectionStatus: 'connected'
+    }]));
+    const tokens = new Map(), changes = [], requests = [];
+    browser.getProxyRotationState = id => health.get(id);
+    browser.beginProxyCycle = () => {};
+    browser.setBrowserKeepAlive = () => {};
+    browser.startMeasurementSession = id => {
+        const t = (tokens.get(id) || 0) + 1;
+        tokens.set(id, t);
+        return t;
+    };
+    browser.cancelMeasurementSession = id => tokens.set(id, (tokens.get(id) || 0) + 1);
+    browser.isMeasurementSessionCurrent = (id, t) => tokens.get(id) === t;
+    browser.assignProxy = async (id, replacement) => {
+        changes.push([id, replacement.id]);
+        health.set(id, { proxy: replacement, googleReached: false,
+            failed: false, captchaSeen: false, connectionStatus: 'proxy-checking' });
+    };
+    const provider = {
+        cancelCurrentFetch() {},
+        fetchAssignDirect: async (ids, assign, _progress, options) => {
+            requests.push({ ids: [...ids], options });
+            const excluded = new Set([
+                ...options.retainedAssignments.map(a => a.proxy.id),
+                ...options.failedProxies.map(p => p.id)
+            ]);
+            const replacement = [proxy(4), proxy(5)].find(p => !excluded.has(p.id));
+            if (!replacement) throw Error('No distinct proxy available');
+            assign({ browserId: ids[0], proxy: replacement });
+        }
+    };
+    const manager = new SeoAutomationManager(provider, browser, async () => []);
+    manager.state = { ...manager.state, running: true, cycleNumber: 1,
+        browserIds: [1, 2, 3], query: 'A', targetWebsite: 'fixture.test' };
+    for (const id of [1, 2, 3]) await manager.handleAssignment(
+        0, 1, { browserId: id, proxy: proxy(id), retained: true },
+        'A', 'fixture.test', '', 5, 'google', { completed: 1 });
+    for (const id of [2, 3]) {
+        health.get(id).failed = true;
+        browser.emit('stateChanged', { id, proxy: proxy(id),
+            connectionStatus: 'proxy-failed', errorMessage: 'ERR_PROXY_CONNECTION_FAILED' });
+    }
+    await waitUntil(() => changes.length === 2);
+    assert.deepEqual(changes, [[2, 'proxy-4'], [3, 'proxy-5']]);
+    assert.equal(health.get(1).proxy.id, 'proxy-1');
+    assert.deepEqual(requests.map(r => r.ids[0]), [2, 3]);
+    assert.ok(Array.from(requests[1].options.retainedAssignments, a => a.proxy.id).includes('proxy-4'),
+        'second repair must reserve the first repaired browser route');
     manager.stop();
 });
